@@ -1,5 +1,5 @@
 [Unit]
-Description=Equity Envolution Agent (private Streamlit service)
+Description=Equity Envolution Agent (Streamlit behind Caddy)
 After=network-online.target
 Wants=network-online.target
 
@@ -12,7 +12,8 @@ Environment=HOME=/var/lib/equity-envolution-agent
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/etc/equity-envolution-agent.env
-ExecStart=/opt/equity-envolution-agent/.venv/bin/streamlit run app.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true --browser.gatherUsageStats=false
+EnvironmentFile=-/etc/equity-envolution-agent.auth.env
+ExecStart=/opt/equity-envolution-agent/.venv/bin/streamlit run app.py --server.address=172.18.0.1 --server.port=8501 --server.baseUrlPath=equity_envolution --server.headless=true --browser.gatherUsageStats=false
 Restart=on-failure
 RestartSec=5
 UMask=0077

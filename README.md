@@ -65,7 +65,9 @@ ssh -L 8501:127.0.0.1:8501 root@<服务器地址>
 
 然后打开 `http://127.0.0.1:8501`。若需公开给评委访问，应先配置 HTTPS 域名、访问口令和反向代理；不要直接把无口令的文件上传应用暴露到公网。设置 `APP_PASSWORD` 可启用页面口令保护。配置 PaddleOCR Token 时，应通过服务器秘密管理方式注入，不要提交 `.env`。
 
-如服务器不适合拉取 Docker 基础镜像，也可使用 `deploy/equity-envolution-agent.service`：在服务器项目目录创建 Python 3.12 虚拟环境并安装 `requirements.txt`，将该 unit 安装到 systemd，再启用服务。该 unit 使用动态非特权用户、只读系统目录、独立状态目录，并只监听 `127.0.0.1:8501`。运行时 Token 可放在权限为 root-only 的 `/etc/equity-envolution-agent.env`，由 systemd 读取；不要提交到 Git。
+如服务器不适合拉取 Docker 基础镜像，也可使用 `deploy/equity-envolution-agent.service`：在服务器项目目录创建 Python 3.12 虚拟环境并安装 `requirements.txt`，将该 unit 安装到 systemd，再启用服务。该 unit 使用动态非特权用户、只读系统目录和独立状态目录；示例绑定 `172.18.0.1:8501`（Docker 网关），由现有反向代理转发，并将 Streamlit 子路径设为 `equity_envolution`。公开访问前应通过 root-only 的 `/etc/equity-envolution-agent.auth.env` 设置 `APP_PASSWORD`；systemd 从 `/etc/equity-envolution-agent.env` 读取运行时 Token。不要提交 `.env` 或服务器凭据到 Git。
+
+当前服务器由 Caddy 接管公网 80/443，项目路径为 `https://rudy.cc.cd/equity_envolution/`；代理配置需保留该路径并转发到上述 Streamlit 端口。
 
 ## 计算口径与人工边界
 
