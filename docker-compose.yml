@@ -1,0 +1,14 @@
+services:
+  equity-agent:
+    build:
+      context: .
+      args:
+        INSTALL_PADDLEOCR_API: ${INSTALL_PADDLEOCR_API:-0}
+    container_name: equity-envolution-agent
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      PADDLEOCR_ACCESS_TOKEN: ${PADDLEOCR_ACCESS_TOKEN:-}
+      PADDLEOCR_MODEL: ${PADDLEOCR_MODEL:-PaddleOCR-VL-1.6}
+      APP_PASSWORD: ${APP_PASSWORD:-}

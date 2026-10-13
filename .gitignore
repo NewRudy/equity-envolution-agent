@@ -1,0 +1,12 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.streamlit/secrets.toml
+*.xlsx
+!sample_data/*.xlsx
+*.pdf
+!sample_data/*.pdf
+.DS_Store

@@ -1,0 +1,4 @@
+-r requirements.txt
+# Optional: PaddleOCR's Python client for the hosted PaddleOCR API.
+# This package is used as an API client; no local OCR model is loaded.
+paddleocr>=3.3,<4
