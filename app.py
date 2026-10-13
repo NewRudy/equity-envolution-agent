@@ -111,7 +111,7 @@ def _display_result(company: str, records: list[FinancialRecord], result: dict) 
     left, right = st.columns([1.15, 0.85])
     with left:
         st.markdown("### 财务数据与来源")
-        st.dataframe(_records_table(records), use_container_width=True, hide_index=True)
+        st.dataframe(_records_table(records), width="stretch", hide_index=True)
     with right:
         st.markdown("### 估值假设")
         assumption = result.get("assumptions")
@@ -125,12 +125,12 @@ def _display_result(company: str, records: list[FinancialRecord], result: dict) 
                 ["EV/EBITDA 倍数", f"{assumption.multiple_low:.1f}x – {assumption.multiple_high:.1f}x"],
                 ["最新净债务", _money(valuations.get("net_debt_used"))],
                 ["FCF 历史观测率", _percent(valuations.get("observed_fcf_margin"))],
-            ], columns=["项目", "本次取值"]), use_container_width=True, hide_index=True)
+            ], columns=["项目", "本次取值"]), width="stretch", hide_index=True)
 
     st.markdown("### 异常与待办")
     warnings = result.get("warnings", [])
     if warnings:
-        st.dataframe(pd.DataFrame(warnings), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(warnings), width="stretch", hide_index=True)
     else:
         st.info("暂未触发内置预警；这不代表数据或估值已经验证。")
     for action in result.get("next_actions", []):
@@ -247,14 +247,14 @@ elif records:
     if not uploaded_financials:
         st.caption("当前使用合成演示数据，不对应任何真实企业。")
     st.markdown("### 数据预览（金额单位：人民币亿元）")
-    st.dataframe(_records_table(records), use_container_width=True, hide_index=True)
+    st.dataframe(_records_table(records), width="stretch", hide_index=True)
 else:
     st.warning("请上传一份财务表，或开启合成演示案例。")
 
 if records and not company_name:
     st.caption("请填写企业名称后开始预审。")
 run_disabled = not records or not company_name or bool(parse_error)
-if st.button("开始估值预审", type="primary", disabled=run_disabled, use_container_width=True):
+if st.button("开始估值预审", type="primary", disabled=run_disabled, width="stretch"):
     assumptions = ValuationAssumptions(
         revenue_growth=revenue_growth_pct / 100,
         fcf_margin=fcf_margin_pct / 100,
