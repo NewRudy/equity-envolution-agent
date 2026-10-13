@@ -65,6 +65,8 @@ ssh -L 8501:127.0.0.1:8501 root@<服务器地址>
 
 然后打开 `http://127.0.0.1:8501`。若需公开给评委访问，应先配置 HTTPS 域名、访问口令和反向代理；不要直接把无口令的文件上传应用暴露到公网。设置 `APP_PASSWORD` 可启用页面口令保护。配置 PaddleOCR Token 时，应通过服务器秘密管理方式注入，不要提交 `.env`。
 
+如服务器不适合拉取 Docker 基础镜像，也可使用 `deploy/equity-envolution-agent.service`：在服务器项目目录创建 Python 3.12 虚拟环境并安装 `requirements.txt`，将该 unit 安装到 systemd，再启用服务。该 unit 使用动态非特权用户、只读系统目录、独立状态目录，并只监听 `127.0.0.1:8501`。运行时 Token 可放在权限为 root-only 的 `/etc/equity-envolution-agent.env`，由 systemd 读取；不要提交到 Git。
+
 ## 计算口径与人工边界
 
 - 自由现金流：经营活动现金流 - `abs(资本开支)`。
