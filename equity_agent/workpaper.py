@@ -17,47 +17,77 @@ def create_workpaper_excel(
 ) -> bytes:
     workbook = Workbook()
     summary = workbook.active
-    summary.title = "Summary"
-    summary.append(["股权投资估值预审工作底稿（初稿）"])
-    summary.append(["企业", company_name])
-    summary.append(["预审状态", result.get("status", "待复核")])
-    summary.append(["重要边界", result.get("scope_note", "仅供估值人员预审，不构成估值结论或投资建议。")])
+    summary.title = "结论摘要"
+    summary.append(["股权估值工作底稿（草稿）"])
+    summary.append(["目标公司", company_name])
+    summary.append(["分析状态", result.get("status", "待复核")])
+    summary.append(["市场法复核人", result.get("market_method", {}).get("reviewer", "未填写")])
+    summary.append(["市场法状态", result.get("market_method", {}).get("status", "待补充")])
+    summary.append(["运行时间", result.get("run_at", "未记录")])
+    summary.append(["范围边界", result.get("scope_note", "估值分析草稿，须由专业人员复核。")])
     summary.append([])
-    summary.append(["方法", "低值（亿元）", "基准/高值（亿元）", "说明"])
+    summary.append(["方法", "低值（亿元）", "基准值（亿元）", "高值（亿元）", "说明"])
     valuations = result.get("valuations", {})
     dcf = valuations.get("dcf", {})
-    comps = valuations.get("multiples", {})
-    summary.append(["DCF 股权价值", _equity(dcf.get("bear")), _equity(dcf.get("bull")), "情景区间；基准情景见 Valuation 页"])
-    if comps:
-        summary.append(["EV/EBITDA 股权价值", comps.get("low", {}).get("equity_value"), comps.get("high", {}).get("equity_value"), "倍数由使用者录入，不含市场数据验证"])
-    summary.append(["提醒", "区间是方法结果的并列展示，不是统计置信区间或正式估值结论。"])
+    dcf_values = [row.get("equity_value") for row in (dcf.get("bear"), dcf.get("base"), dcf.get("bull")) if row]
+    if dcf_values:
+        summary.append(["DCF 参照", min(dcf_values), dcf.get("base", {}).get("equity_value"), max(dcf_values), "敏感性观察，不是统计置信区间"])
+    else:
+        summary.append(["DCF 参照", None, None, None, "未执行或关键数据/假设未通过检查"])
+    market = result.get("market_method", {})
+    market_result = market.get("result")
+    if market_result:
+        summary.append([
+            market.get("method"),
+            market_result.get("low_equity_value"),
+            market_result.get("equity_value"),
+            market_result.get("high_equity_value"),
+            market_result.get("range_note"),
+        ])
+    else:
+        summary.append([market.get("method", "市场法"), None, None, None, "未满足市场法计算/复核条件；请查看 Review_Queue"])
+    summary.append([])
+    summary.append(["市场法公式", _market_formula(market.get("method", "EV/EBITDA"))])
+    summary.append(["市场倍数", market.get("weighted_multiple"), "经修正、按人工权重加权；倍数来源见 Comparable_Analysis"])
 
-    assumptions = workbook.create_sheet("Assumptions")
-    assumptions.append(["假设项", "取值", "口径/说明"])
+    assumptions = workbook.create_sheet("假设与口径")
+    assumptions.append(["假设项", "取值", "说明"])
     assumption_obj = result.get("assumptions")
     assumption_values = vars(assumption_obj) if assumption_obj else {}
-    labels = {
-        "revenue_growth": ("预测收入年增长率", "%"),
-        "fcf_margin": ("预测自由现金流率", "%"),
-        "wacc": ("WACC", "%"),
-        "terminal_growth": ("永续增长率", "%"),
-        "forecast_years": ("预测年数", "年"),
-        "multiple_low": ("EV/EBITDA 倍数下限", "x"),
-        "multiple_high": ("EV/EBITDA 倍数上限", "x"),
-    }
-    for key, (label, unit) in labels.items():
+    for key, label, unit in (
+        ("revenue_growth", "预测收入年增长率", "%"),
+        ("fcf_margin", "预测自由现金流率", "%"),
+        ("wacc", "WACC", "%"),
+        ("terminal_growth", "永续增长率", "%"),
+        ("forecast_years", "预测年数", "年"),
+    ):
         value = assumption_values.get(key)
         if value is not None:
             display = value * 100 if unit == "%" else value
-            assumptions.append([label, display, unit + "；由使用者输入，需复核来源"])
-    assumptions.append(["净债务", valuations.get("net_debt_used"), "最新年度结构化财务表；需与原始报表核对"])
-    assumptions.append(["FCF 历史观测率", _percent(valuations.get("observed_fcf_margin")), "最新年度（经营现金流 - 资本开支）/收入"])
-    assumptions.append(["FCF 率本次采用值", _percent(valuations.get("fcf_margin_used")), "用于 DCF 的预测假设"])
+            assumptions.append([label, display, f"{unit}；使用者输入，需结合原始依据复核"])
+    assumptions.append(["目标公司净债务", valuations.get("net_debt_used"), "最新年度财务表；EV/EBITDA 法使用"])
+    assumptions.append(["目标账面权益口径", market.get("target_book_equity_basis"), "P/B 法使用"])
+    assumptions.append(["目标数据来源", market.get("target_source"), "所选最新年度目标公司记录"])
+    assumptions.append(["目标指标定位", "; ".join(f"{key}={value}" for key, value in market.get("target_provenance", {}).items()), "回到财务数据来源页核验"])
+    assumptions.append(["流动性折扣", market.get("dlom_pct"), "百分数；理由和来源由复核人填写"])
+    assumptions.append(["流动性折扣理由", market.get("dlom_reason"), market.get("dlom_source")])
+    assumptions.append(["其他股权价值调整", market.get("bridge_adjustment"), "亿元；按折扣后加减，理由和来源由复核人填写"])
+    assumptions.append(["其他调整理由", market.get("bridge_reason"), market.get("bridge_source")])
+    assumptions.append(["复核人", market.get("reviewer"), "人工确认，不代表正式评估结论"])
+    confirmations = market.get("confirmations", {})
+    assumptions.append(["复核确认", "状态", "确认项"])
+    for key, label in (
+        ("peer_review", "已复核可比范围、报告期、取价依据、来源和入选理由"),
+        ("target_review", "已核实目标公司指标、单位、期间和合并口径"),
+        ("bridge_review", "已确认桥接和其他股权调整口径"),
+        ("discount_review", "已确认流动性折扣取值"),
+    ):
+        assumptions.append(["确认", "是" if confirmations.get(key) else "否", label])
 
-    financials = workbook.create_sheet("Financials_Source")
-    financials.append(["年度", "营业收入（亿元）", "EBITDA（亿元）", "净利润（亿元）", "经营现金流（亿元）", "资本开支（亿元）", "净债务（亿元）", "来源", "字段单元格/行"])
+    financials = workbook.create_sheet("财务数据来源")
+    financials.append(["年度", "营业收入（亿元）", "EBITDA（亿元）", "净利润（亿元）", "经营现金流（亿元）", "资本开支（亿元）", "净债务（亿元）", "账面权益（亿元）", "来源", "字段定位"])
+    fields = ["revenue", "ebitda", "net_income", "operating_cash_flow", "capex", "net_debt", "book_equity"]
     for record in records:
-        fields = ["revenue", "ebitda", "net_income", "operating_cash_flow", "capex", "net_debt"]
         financials.append([
             record.year,
             *[record.metrics.get(field) for field in fields],
@@ -65,36 +95,64 @@ def create_workpaper_excel(
             "; ".join(f"{field}={record.provenance.get(field, '未提供')}" for field in fields),
         ])
 
-    valuation_sheet = workbook.create_sheet("Valuation")
-    valuation_sheet.append(["方法/情景", "企业价值（亿元）", "股权价值（亿元）", "补充说明"])
+    peer_sheet = workbook.create_sheet("Comparable_Analysis")
+    peer_sheet.append([
+        "纳入公司", "报告期", "取价依据", "股权市值（亿元）", "净债务（亿元）", "其他 EV 调整（亿元）", "EV 调整说明", "EBITDA（亿元）",
+        "账面权益（亿元）", "账面权益口径", "未修正倍数", "修正系数", "修正后倍数", "权重（%）",
+        "入选理由", "修正理由", "数据来源", "原文件位置",
+    ])
+    for peer in market.get("peer_analysis", []):
+        peer_sheet.append([
+            peer.get("company"), peer.get("period"), peer.get("price_basis"), peer.get("market_cap"),
+            peer.get("net_debt"), peer.get("other_ev_adjustment"), peer.get("ev_adjustment_reason"),
+            peer.get("ebitda"), peer.get("book_equity"), peer.get("book_equity_basis"),
+            peer.get("raw_multiple"), peer.get("adjustment_factor"), peer.get("adjusted_multiple"),
+            peer.get("weight_pct"), peer.get("selection_reason"), peer.get("adjustment_reason"),
+            peer.get("source"), peer.get("source_location"),
+        ])
+    peer_sheet.append([])
+    peer_sheet.append(["选用倍数", market.get("weighted_multiple")])
+
+    valuation_sheet = workbook.create_sheet("估值计算")
+    valuation_sheet.append(["方法/情景", "企业价值（亿元）", "股权价值（亿元）", "计算信息"])
     for scenario, row in dcf.items():
-        valuation_sheet.append([f"DCF / {scenario}", row.get("enterprise_value"), row.get("equity_value"), "自由现金流折现；固定公式计算"])
-    for name, row in comps.items():
-        valuation_sheet.append([f"EV/EBITDA / {name}", row.get("enterprise_value"), row.get("equity_value"), f"输入倍数 {row.get('multiple')}x"])
-    if not valuations:
-        valuation_sheet.append(["估值未执行", None, None, "存在高优先级缺失项或无效假设；先处理 Review_Queue。"])
+        valuation_sheet.append([f"DCF / {scenario}", row.get("enterprise_value"), row.get("equity_value"), "现金流折现，固定公式计算"])
+    if market_result:
+        valuation_sheet.append([
+            market.get("method"), None, market_result.get("equity_value"),
+            f"加权修正倍数 {market_result.get('weighted_multiple'):.4g}x；DLOM {market.get('dlom_pct')}%",
+        ])
+        valuation_sheet.append(["市场法低端", None, market_result.get("low_equity_value"), "所选样本修正倍数最小值"])
+        valuation_sheet.append(["市场法高端", None, market_result.get("high_equity_value"), "所选样本修正倍数最大值"])
     valuation_sheet.append([])
-    valuation_sheet.append(["DCF 方法", "先以最新年度收入为基数逐年外推收入和 FCF，再折现显性期 FCF 与永续终值；股权价值 = 企业价值 - 净债务。"])
-    valuation_sheet.append(["可比倍数方法", "企业价值 = 最新年度 EBITDA × 使用者输入的 EV/EBITDA 倍数；股权价值 = 企业价值 - 净债务。倍数不是市场数据。"])
-    valuation_sheet.append(["情景边界", "Bear/Base/Bull 对增长率、FCF 率和 WACC 做小幅机械扰动，仅用于敏感性观察。"])
+    valuation_sheet.append(["EV/EBITDA 公式", "可比 EV = 股权市值 + 净债务 + 其他 EV 调整；目标股权价值 = (目标 EBITDA × 加权修正倍数 - 目标净债务) × (1 - DLOM) + 其他股权调整。"])
+    valuation_sheet.append(["P/B 公式", "可比 P/B = 股权市值 / 账面权益；目标股权价值 = 目标账面权益 × 加权修正倍数 × (1 - DLOM) + 其他股权调整。"])
+    valuation_sheet.append(["DCF 公式", "逐年预测收入和自由现金流并折现；股权价值 = 企业价值 - 最新年度净债务。"])
 
     review = workbook.create_sheet("Review_Queue")
-    review.append(["级别", "待复核事项"])
+    review.append(["级别", "待处理事项"])
     for item in result.get("warnings", []):
         review.append([item.get("severity"), item.get("message")])
+    for blocker in market.get("blockers", []):
+        review.append(["市场法门槛", blocker])
     review.append([])
     review.append(["建议动作"])
     for action in result.get("next_actions", []):
         review.append([action])
 
-    documents = workbook.create_sheet("Document_Evidence")
-    documents.append(["文件", "处理方式", "页数", "任务 ID", "提示", "识别文本/片段（截取）"])
-    for item in result.get("documents", []):
-        documents.append([
-            item.get("name"), item.get("method"), item.get("pages"), item.get("job_id"),
-            item.get("warning"), (item.get("text") or "")[:12000],
-        ])
+    _format_workbook(workbook)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
 
+
+def _market_formula(method: str) -> str:
+    if method == "P/B":
+        return "目标账面权益 × 加权修正 P/B × (1 - 流动性折扣) + 其他股权调整"
+    return "(目标 EBITDA × 加权修正 EV/EBITDA - 目标净债务) × (1 - 流动性折扣) + 其他股权调整"
+
+
+def _format_workbook(workbook: Workbook) -> None:
     for sheet in workbook.worksheets:
         sheet.freeze_panes = "A2"
         sheet.auto_filter.ref = sheet.dimensions if sheet.max_row > 1 else "A1"
@@ -104,19 +162,7 @@ def create_workpaper_excel(
         for column in sheet.columns:
             column_letter = get_column_letter(column[0].column)
             max_width = max((len(str(cell.value or "")) for cell in column[:50]), default=10)
-            sheet.column_dimensions[column_letter].width = min(max(max_width + 2, 12), 72)
+            sheet.column_dimensions[column_letter].width = min(max(max_width + 2, 12), 60)
         for row in sheet.iter_rows(min_row=2):
             for cell in row:
                 cell.alignment = Alignment(vertical="top", wrap_text=True)
-
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    return buffer.getvalue()
-
-
-def _equity(value: dict[str, Any] | None) -> float | None:
-    return value.get("equity_value") if value else None
-
-
-def _percent(value: float | None) -> float | None:
-    return value * 100 if value is not None else None

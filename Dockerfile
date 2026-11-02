@@ -5,16 +5,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
-ARG INSTALL_PADDLEOCR_API=0
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt \
-    && if [ "$INSTALL_PADDLEOCR_API" = "1" ]; then pip install --no-cache-dir "paddleocr>=3.3,<4"; fi \
     && groupadd --system app \
     && useradd --system --gid app --home-dir /app app
 
 COPY --chown=app:app app.py ./app.py
 COPY --chown=app:app equity_agent ./equity_agent
-COPY --chown=app:app sample_data ./sample_data
 COPY --chown=app:app .streamlit ./.streamlit
 
 USER app

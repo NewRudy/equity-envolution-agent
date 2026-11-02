@@ -25,6 +25,17 @@ METRIC_ALIASES = {
         "购建固定资产无形资产和其他长期资产支付的现金",
     ),
     "net_debt": ("netdebt", "净债务", "净负债", "有息负债减货币资金"),
+    "book_equity": (
+        "bookequity",
+        "账面权益",
+        "账面净资产",
+        "归母净资产",
+        "归属于母公司所有者权益",
+        "归属于母公司股东权益",
+        "所有者权益",
+        "股东权益",
+        "净资产",
+    ),
 }
 PERIOD_ALIASES = ("year", "年度", "年份", "报告期", "会计年度", "period")
 
@@ -208,25 +219,19 @@ def template_bytes() -> bytes:
     sheet.title = "Financials"
     headers = [
         "年度", "营业收入（亿元）", "EBITDA（亿元）", "净利润（亿元）",
-        "经营现金流（亿元）", "资本开支（亿元）", "净债务（亿元）",
+        "经营现金流（亿元）", "资本开支（亿元）", "净债务（亿元）", "账面权益（亿元）",
     ]
     sheet.append(headers)
-    for row in [
-        ["2023A", 8.0, 0.8, 0.4, 0.7, 0.3, 1.5],
-        ["2024A", 10.0, 1.2, 0.6, 0.9, 0.35, 1.5],
-        ["2025A", 13.0, 1.8, 0.9, 1.3, 0.5, 1.5],
-    ]:
-        sheet.append(row)
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="15324B")
-    widths = [14, 20, 18, 18, 22, 20, 18]
+    widths = [14, 20, 18, 18, 22, 20, 18, 20]
     for index, width in enumerate(widths, 1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     notes = workbook.create_sheet("Instructions")
     notes.append(["字段", "说明"])
     notes.append(["单位", "模板中所有金额均为人民币亿元；不确定单位时请勿直接用于估值。"])
-    notes.append(["必填", "年度、营业收入；建议提供 EBITDA、净利润、经营现金流、资本开支、净债务。"])
+    notes.append(["必填", "年度、营业收入；建议提供 EBITDA、净债务。使用 P/B 时需提供账面权益并注明归母/合并口径。"])
     notes.append(["来源", "上传后系统保留工作表、单元格位置，供估值人员逐项复核。"])
     for cell in notes[1]:
         cell.font = Font(bold=True, color="FFFFFF")

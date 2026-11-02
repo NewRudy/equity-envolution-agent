@@ -13,8 +13,6 @@ class ValuationAssumptions:
     wacc: float = 0.12
     terminal_growth: float = 0.03
     forecast_years: int = 5
-    multiple_low: float = 6.0
-    multiple_high: float = 10.0
 
 
 def _fcf(record: FinancialRecord) -> float | None:
@@ -87,9 +85,6 @@ def run_valuation_review(
         warnings.append({"severity": "高", "message": "WACC 必须大于永续增长率，否则 DCF 终值无效。"})
     if not (0.0 < assumptions.wacc <= 0.50):
         warnings.append({"severity": "高", "message": "WACC 应在 0% 到 50% 之间。"})
-    if assumptions.multiple_low <= 0 or assumptions.multiple_high < assumptions.multiple_low:
-        warnings.append({"severity": "高", "message": "EV/EBITDA 倍数区间设置无效。"})
-
     for prior, current in zip(rows, rows[1:]):
         prior_revenue = prior.metrics.get("revenue")
         current_revenue = current.metrics.get("revenue")
@@ -132,19 +127,12 @@ def run_valuation_review(
                     "base": _dcf(revenue, margin, assumptions.revenue_growth, wacc, terminal_growth, assumptions.forecast_years, net_debt),
                     "bull": _dcf(revenue, margin + 0.02, assumptions.revenue_growth + 0.05, max(0.01, wacc - 0.01), min(terminal_growth + 0.005, max(0.0, wacc - 0.02)), assumptions.forecast_years, net_debt),
                 }
-                multiples = None
-                if ebitda is not None and ebitda > 0:
-                    multiples = {
-                        "low": {"multiple": assumptions.multiple_low, "enterprise_value": ebitda * assumptions.multiple_low, "equity_value": ebitda * assumptions.multiple_low - net_debt},
-                        "high": {"multiple": assumptions.multiple_high, "enterprise_value": ebitda * assumptions.multiple_high, "equity_value": ebitda * assumptions.multiple_high - net_debt},
-                    }
-                elif ebitda is not None:
-                    warnings.append({"severity": "中", "message": "最新年度 EBITDA 非正，EV/EBITDA 可比法不展示；DCF 仅作单一方法的敏感性观察。"})
+                if ebitda is not None and ebitda <= 0:
+                    warnings.append({"severity": "中", "message": "最新年度 EBITDA 非正，EV/EBITDA 市场法无法计算；DCF 仅作单一方法的敏感性观察。"})
                 if historical_fcf is None:
                     warnings.append({"severity": "中", "message": "缺少最新年度经营现金流或资本开支；DCF 的 FCF 率完全依赖使用者输入，需重点复核。"})
                 valuations = {
                     "dcf": dcf_scenarios,
-                    "multiples": multiples,
                     "observed_fcf_margin": observed_margin,
                     "fcf_margin_used": margin,
                     "net_debt_used": net_debt,
@@ -175,7 +163,7 @@ def _next_actions(warnings: list[dict[str, str]], valuations: dict[str, Any]) ->
     if any("收入" in item["message"] or "重复年度" in item["message"] for item in warnings):
         actions.append("回到原始报表核验期间、合并范围、单位和重述情况。")
     if valuations:
-        actions.append("由估值人员确认增长、FCF 利润率、WACC、永续增长率和倍数来源后再使用区间。")
+        actions.append("由估值人员确认增长、FCF 利润率、WACC 和永续增长率后再使用 DCF 参照区间。")
     if not actions:
         actions.append("检查原始材料与每项数据来源；当前仅为预审线索，不是正式评估结论。")
     return list(dict.fromkeys(actions))
