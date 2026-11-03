@@ -53,6 +53,7 @@ def _dcf(
 def run_valuation_review(
     records: list[FinancialRecord],
     assumptions: ValuationAssumptions,
+    include_dcf: bool = True,
 ) -> dict[str, Any]:
     """Run fixed, explainable checks and valuation tools; never make an investment decision."""
     rows = sorted(records, key=lambda record: int(record.year))
@@ -75,15 +76,13 @@ def run_valuation_review(
     revenue = latest.metrics.get("revenue")
     ebitda = latest.metrics.get("ebitda")
     net_debt = latest.metrics.get("net_debt")
-    if revenue is None or revenue <= 0:
+    if include_dcf and (revenue is None or revenue <= 0):
         warnings.append({"severity": "高", "message": "最新年度营业收入缺失或非正数，不能执行估值。"})
-    if ebitda is None:
-        warnings.append({"severity": "中", "message": "缺少最新年度 EBITDA，EV/EBITDA 可比法无法计算；DCF 仍可单独展示。"})
-    if net_debt is None:
+    if include_dcf and net_debt is None:
         warnings.append({"severity": "高", "message": "缺少最新年度净债务，无法从企业价值转换为股权价值。"})
-    if assumptions.wacc <= assumptions.terminal_growth:
+    if include_dcf and assumptions.wacc <= assumptions.terminal_growth:
         warnings.append({"severity": "高", "message": "WACC 必须大于永续增长率，否则 DCF 终值无效。"})
-    if not (0.0 < assumptions.wacc <= 0.50):
+    if include_dcf and not (0.0 < assumptions.wacc <= 0.50):
         warnings.append({"severity": "高", "message": "WACC 应在 0% 到 50% 之间。"})
     for prior, current in zip(rows, rows[1:]):
         prior_revenue = prior.metrics.get("revenue")
@@ -109,7 +108,7 @@ def run_valuation_review(
 
     invalid = any(item["severity"] == "高" for item in warnings)
     valuations: dict[str, Any] = {}
-    if not invalid and revenue is not None and net_debt is not None:
+    if include_dcf and not invalid and revenue is not None and net_debt is not None:
         historical_fcf = _fcf(latest)
         observed_margin = historical_fcf / revenue if historical_fcf is not None else None
         margin = assumptions.fcf_margin if assumptions.fcf_margin is not None else observed_margin
@@ -147,6 +146,7 @@ def run_valuation_review(
         "warnings": warnings,
         "valuations": valuations,
         "assumptions": assumptions,
+        "include_dcf": include_dcf,
         "records": rows,
         "next_actions": _next_actions(warnings, valuations),
     }

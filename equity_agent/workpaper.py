@@ -18,7 +18,8 @@ def create_workpaper_excel(
     workbook = Workbook()
     summary = workbook.active
     summary.title = "结论摘要"
-    summary.append(["股权估值工作底稿（草稿）"])
+    is_demo = result.get("is_demo", False)
+    summary.append(["合成示例底稿（不可用于真实估值）" if is_demo else "股权估值工作底稿（草稿）"])
     summary.append(["目标公司", company_name])
     summary.append(["分析状态", result.get("status", "待复核")])
     summary.append(["市场法复核人", result.get("market_method", {}).get("reviewer", "未填写")])
@@ -32,7 +33,7 @@ def create_workpaper_excel(
     dcf_values = [row.get("equity_value") for row in (dcf.get("bear"), dcf.get("base"), dcf.get("bull")) if row]
     if dcf_values:
         summary.append(["DCF 参照", min(dcf_values), dcf.get("base", {}).get("equity_value"), max(dcf_values), "敏感性观察，不是统计置信区间"])
-    else:
+    elif result.get("include_dcf", True):
         summary.append(["DCF 参照", None, None, None, "未执行或关键数据/假设未通过检查"])
     market = result.get("market_method", {})
     market_result = market.get("result")
@@ -53,7 +54,7 @@ def create_workpaper_excel(
     assumptions = workbook.create_sheet("假设与口径")
     assumptions.append(["假设项", "取值", "说明"])
     assumption_obj = result.get("assumptions")
-    assumption_values = vars(assumption_obj) if assumption_obj else {}
+    assumption_values = vars(assumption_obj) if assumption_obj and result.get("include_dcf", True) else {}
     for key, label, unit in (
         ("revenue_growth", "预测收入年增长率", "%"),
         ("fcf_margin", "预测自由现金流率", "%"),
@@ -65,7 +66,7 @@ def create_workpaper_excel(
         if value is not None:
             display = value * 100 if unit == "%" else value
             assumptions.append([label, display, f"{unit}；使用者输入，需结合原始依据复核"])
-    assumptions.append(["目标公司净债务", valuations.get("net_debt_used"), "最新年度财务表；EV/EBITDA 法使用"])
+    assumptions.append(["目标公司净债务", market.get("target_net_debt"), "最新年度财务表；EV/EBITDA 法使用"])
     assumptions.append(["目标账面权益口径", market.get("target_book_equity_basis"), "P/B 法使用"])
     assumptions.append(["目标数据来源", market.get("target_source"), "所选最新年度目标公司记录"])
     assumptions.append(["目标指标定位", "; ".join(f"{key}={value}" for key, value in market.get("target_provenance", {}).items()), "回到财务数据来源页核验"])
@@ -82,7 +83,8 @@ def create_workpaper_excel(
         ("bridge_review", "已确认桥接和其他股权调整口径"),
         ("discount_review", "已确认流动性折扣取值"),
     ):
-        assumptions.append(["确认", "是" if confirmations.get(key) else "否", label])
+        state = "演示预设，非人工复核" if is_demo else ("是" if confirmations.get(key) else "否")
+        assumptions.append(["确认", state, label])
 
     financials = workbook.create_sheet("财务数据来源")
     financials.append(["年度", "营业收入（亿元）", "EBITDA（亿元）", "净利润（亿元）", "经营现金流（亿元）", "资本开支（亿元）", "净债务（亿元）", "账面权益（亿元）", "来源", "字段定位"])
@@ -127,7 +129,8 @@ def create_workpaper_excel(
     valuation_sheet.append([])
     valuation_sheet.append(["EV/EBITDA 公式", "可比 EV = 股权市值 + 净债务 + 其他 EV 调整；目标股权价值 = (目标 EBITDA × 加权修正倍数 - 目标净债务) × (1 - DLOM) + 其他股权调整。"])
     valuation_sheet.append(["P/B 公式", "可比 P/B = 股权市值 / 账面权益；目标股权价值 = 目标账面权益 × 加权修正倍数 × (1 - DLOM) + 其他股权调整。"])
-    valuation_sheet.append(["DCF 公式", "逐年预测收入和自由现金流并折现；股权价值 = 企业价值 - 最新年度净债务。"])
+    if result.get("include_dcf", True):
+        valuation_sheet.append(["DCF 公式", "逐年预测收入和自由现金流并折现；股权价值 = 企业价值 - 最新年度净债务。"])
 
     review = workbook.create_sheet("Review_Queue")
     review.append(["级别", "待处理事项"])

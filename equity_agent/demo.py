@@ -20,3 +20,35 @@ def demo_records() -> list[FinancialRecord]:
             )
         )
     return records
+
+
+def demo_comparables() -> list[dict]:
+    """A complete, explicitly fictional peer set for the one-click product walkthrough."""
+    peers = []
+    for name, cap, debt, ebitda, equity in (
+        ("示例同业 A", 18.0, 2.0, 2.0, 7.0),
+        ("示例同业 B", 24.0, 1.2, 2.4, 8.0),
+        ("示例同业 C", 15.5, 0.7, 1.8, 5.5),
+        ("示例同业 D", 28.0, 2.0, 2.5, 9.0),
+    ):
+        peers.append({
+            "selected": True,
+            "company": name,
+            "ticker": "虚构",
+            "period": "2025 年年报（合成）",
+            "price_basis": "示例基准日股权市值（合成）",
+            "market_cap": cap,
+            "net_debt": debt,
+            "other_ev_adjustment": 0.0,
+            "ev_adjustment_reason": "合成示例无其他融资项目",
+            "ebitda": ebitda,
+            "book_equity": equity,
+            "book_equity_basis": "合并报表归母权益（合成）",
+            "source": "合成演示数据；不对应真实公司、公告或市场行情",
+            "source_location": "程序内合成示例",
+            "selection_reason": "合成场景预设业务与规模相近，用于展示操作流程",
+            "adjustment_factor": 1.0,
+            "weight_pct": 25.0,
+            "adjustment_reason": "合成示例暂不修正倍数",
+        })
+    return peers

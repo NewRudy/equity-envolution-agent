@@ -11,9 +11,10 @@ def run_agent(
     records: list[FinancialRecord],
     assumptions: ValuationAssumptions,
     market_request: dict[str, Any],
+    include_dcf: bool = True,
 ) -> dict[str, Any]:
     """Run deterministic financial checks, DCF reference, and gated market method."""
-    analysis = run_valuation_review(records, assumptions)
+    analysis = run_valuation_review(records, assumptions, include_dcf=include_dcf)
     analysis["market_method"] = calculate_market_method(**market_request)
     analysis["agent_steps"] = [
         "读取目标公司财务数据和可比公司输入，保留文件与单元格/行定位。",

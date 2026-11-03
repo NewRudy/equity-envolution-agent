@@ -68,7 +68,7 @@ def _normalize_header(value: Any) -> str:
 
 
 _NORMALIZED_ALIASES = {
-    key: {_normalize_header(alias) for alias in aliases}
+    key: {_normalize_header(alias) for alias in (*aliases, PEER_LABELS[key])}
     for key, aliases in _HEADER_ALIASES.items()
 }
 
