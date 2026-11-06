@@ -20,6 +20,8 @@ RULES = {
 }
 POOL_COLUMNS = ["代码", "公司", "行业标签", "市场", "上市日期", "主营业务", "主营产品", "经营评述", "报告期", "来源"]
 DECISIONS = ("采纳", "存疑", "剔除")
+REVIEW_DIMENSIONS = ("主营与收入构成", "客户与市场", "经营模式与产业链", "规模、阶段与风险")
+DIMENSION_CHOICES = ("未核对", "相近", "有差异", "关键不匹配", "待补证据")
 
 
 def clean(value: Any, limit: int = 3000) -> str:

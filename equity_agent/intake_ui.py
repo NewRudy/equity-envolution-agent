@@ -3,6 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 from .financials import parse_financial_file, template_bytes
+from .guidance import ROUTE_DOCUMENTS, ROUTE_GUIDE, ROUTE_MATERIAL, SCREEN_PRESETS, route_suggestions, tag_suggestions
 from .market_method import parse_comparable_file, comparable_template_bytes
 from .presentation import money, table
 from .project import LISTED, ROUTES, Profile, Project
@@ -12,13 +13,6 @@ from .screening import (
 )
 from .ui_common import XLSX, counter_cards, go, key, nav_actions, page_intro, plain
 from .workflow import available_records
-
-
-ROUTE_INFO = {
-    "交易案例比较法": "请留存交易对象、成交日、权益比例、交易条件与对价来源。上市倍数模块对此路径不出值。",
-    "最近融资价格参考": "请留存融资协议、定价日、股份类别及特殊条款。融资价格需要结合交易条件判断。",
-    "穿透到经营资产": "请按底层经营资产分别建立项目，记录持股链条与比例。母公司的行业标签不用于替代底层业务筛选。",
-}
 
 
 def profile_page(project: Project) -> None:
@@ -36,12 +30,27 @@ def profile_page(project: Project) -> None:
             plain(profile.source)
         nav_actions(("返回总览", "home"), ("查看候选筛选", "pool"))
         return
+    with st.expander("按已有资料比较工作路径", expanded=True):
+        material_options = list(ROUTE_MATERIAL.values())
+        materials = st.multiselect(
+            "目前能取得的资料", material_options,
+            default=[item for item in project.route_materials if item in material_options],
+            key=key(project, "route_materials"),
+        )
+        suggested = route_suggestions(materials)
+        if suggested:
+            plain("可优先核对 " + "、".join(suggested) + "。建议基于你勾选的资料。")
+        else:
+            st.caption("勾选已有资料，可看到对应的工作路径和下一步要核对的内容。")
+        table(["路径", "需要的资料", "下一步"], [[route, ROUTE_MATERIAL[route], ROUTE_GUIDE[route]] for route in ROUTES])
     with st.form(key(project, "profile"), border=True):
         st.subheader("建档信息")
         cols = st.columns([1.45, 1])
         name = cols[0].text_input("标的名称", value=profile.name, max_chars=160, placeholder="例如：某工业软件公司")
         benchmark_text = cols[1].text_input("估值基准日", value=profile.benchmark, max_chars=10, placeholder="YYYY-MM-DD")
         route = st.selectbox("估值路径", ROUTES, index=ROUTES.index(profile.route))
+        route_reason = st.text_input("路径选择依据", value=project.route_reason, max_chars=800,
+                                     placeholder="简述已有证据，或说明为什么选择其他路径")
         st.subheader("业务画像")
         product = st.text_area("主营产品或服务", value=profile.products, max_chars=1000, height=82,
                                placeholder="写清产品解决的问题，多个产品可用顿号分隔")
@@ -61,14 +70,40 @@ def profile_page(project: Project) -> None:
                 st.error("估值基准日请按 YYYY-MM-DD 填写，日期须有效。")
             elif not all((name.strip(), benchmark, product.strip(), source.strip())):
                 st.error("请填写标的名称、估值基准日、主营产品和业务资料来源。")
+            elif (route != profile.route or (suggested and route not in suggested)) and not route_reason.strip():
+                st.error("切换路径或选择资料暂不支持的路径时，请补充选择依据。")
             else:
                 project.save_profile(Profile(
                     name.strip(), benchmark.isoformat(), product.strip(), customers.strip(), model.strip(),
                     difference.strip(), source.strip(), route,
                 ))
+                if tuple(materials) != project.route_materials or route_reason.strip() != project.route_reason:
+                    project.route_materials = tuple(materials)
+                    project.route_reason = route_reason.strip()
+                    project.invalidate()
+                    project.note("保存路径依据", f"{route} · 建议路径 {'、'.join(suggested) or '待补资料'}",
+                                 evidence=project.route_reason)
                 go("pool")
-    if profile.route != LISTED:
-        st.info(ROUTE_INFO[profile.route])
+
+
+def _route_checklist(project: Project) -> None:
+    route = project.profile.route
+    documents = project.route_documents.get(route, {})
+    with st.form(key(project, f"documents_{route}"), border=True):
+        st.subheader(route + " · 资料核对")
+        plain(ROUTE_GUIDE[route])
+        st.caption(f"已记录 {sum(bool(value) for value in documents.values())}/{len(ROUTE_DOCUMENTS[route])} 项，可将取证记录带入底稿。")
+        values = {
+            label: st.text_input(label, value=documents.get(label, ""), max_chars=900, placeholder="填写已核对的事实、未决项或原件位置").strip()
+            for label in ROUTE_DOCUMENTS[route]
+        }
+        if st.form_submit_button("保存本路径取证", type="primary"):
+            if values != documents:
+                project.route_documents[route] = values
+                project.invalidate()
+                project.note("保存路径取证", f"{route} · 已记录 {sum(bool(v) for v in values.values())} 项",
+                             evidence=values[ROUTE_DOCUMENTS[route][-1]])
+            st.rerun()
 
 
 def financial_upload(project: Project) -> None:
@@ -162,10 +197,29 @@ def _csv_source(project: Project) -> Pool | None:
 
 def _screen_form(project: Project, pool: Pool, source: str) -> None:
     rules = project.rules
-    with st.form(key(project, f"screen_{source}"), border=True):
+    preset_options = list(SCREEN_PRESETS)
+    default_preset = "自定义" if rules.get("最低上市月数", 24) != 24 else "常规初筛"
+    saved_preset = rules.get("筛选方案", default_preset)
+    preset = st.selectbox("筛选起点", preset_options, index=preset_options.index(saved_preset) if saved_preset in preset_options else 1,
+                          key=key(project, f"preset_{source}"))
+    default_months, use_case = SCREEN_PRESETS[preset]
+    st.caption(use_case + " 上市月数可按项目修改。")
+    tags_key = key(project, f"screen_tags_{source}")
+    suggested_tags = tag_suggestions(pool, project.profile.products)
+    with st.expander("查看智能体建议的行业"):
+        if suggested_tags:
+            table(["行业标签", "主营词命中公司数", "示例"], [list(row) for row in suggested_tags])
+            st.caption("按标的主营词与资料库原文匹配。请核对标签覆盖的业务。")
+            if st.button("把首个建议填入行业选择", key=key(project, f"tags_hint_{source}")):
+                st.session_state[tags_key] = [suggested_tags[0][0]]
+        else:
+            st.caption("现有主营描述没有明确的标签线索。可用更短的检索词，或直接选择行业。")
+    available_tags = pool.tags
+    existing = st.session_state.get(tags_key, rules.get("行业标签", []))
+    st.session_state[tags_key] = [tag for tag in existing if tag in available_tags]
+    with st.form(key(project, f"screen_{source}_{preset}"), border=True):
         st.subheader("设置筛选范围")
-        tags = st.multiselect("行业标签", pool.tags, default=[tag for tag in rules.get("行业标签", []) if tag in pool.tags],
-                              placeholder="选择一个或多个行业")
+        tags = st.multiselect("行业标签", available_tags, key=tags_key, placeholder="选择一个或多个行业")
         st.caption("所选标签按并集入池；自有资料不选标签时使用该表的全部公司。")
         cols = st.columns(2)
         terms = cols[0].text_input("主营检索词", value="、".join(rules.get("检索词", [])) or project.profile.products[:180],
@@ -173,30 +227,53 @@ def _screen_form(project: Project, pool: Pool, source: str) -> None:
         differences = cols[1].text_input("差异提醒词", value="、".join(rules.get("差异词", [])) or project.profile.difference[:180],
                                          help="命中只提示，需结合业务占比人工判断。")
         a, b = st.columns([1, 1.3])
-        months = a.number_input("最低上市月数", min_value=0, max_value=120, step=1, value=int(rules.get("最低上市月数", 24)),
-                                help="24 个月是参考预设。请按本次业务范围设定。")
+        months_saved = int(rules.get("最低上市月数", 24))
+        month_value = months_saved if default_months is None or preset == rules.get("筛选方案") else default_months
+        months = a.number_input("最低上市月数", min_value=0, max_value=120, step=1, value=month_value,
+                                help="0 表示不要求最短交易历史。基准日后上市的公司仍剔除。")
         st_only = b.checkbox("剔除 ST / 退市标记", value=bool(rules.get("剔除 ST", True)))
         a_only = b.checkbox("剔除已知 B 股或非 A 股", value=bool(rules.get("限制 A 股", source == "opc")))
-        if st.form_submit_button("生成候选池", type="primary", width="stretch"):
+        if st.form_submit_button("预览筛选影响", type="primary", width="stretch"):
+            st.session_state.pop(key(project, "screen_preview"), None)
             try:
                 screen = run_screen(
                     pool, as_of=project.profile.benchmark, tags=tuple(tags), terms=split_terms(terms),
                     caution_terms=split_terms(differences), listing_months=months,
                     exclude_st=st_only, exclude_non_a=a_only, context=project.context,
                 )
-                project.save_screen(screen, {
+                chosen_rules = {
                     "input": source, "行业标签": tags, "检索词": list(split_terms(terms)),
                     "差异词": list(split_terms(differences)), "最低上市月数": months,
-                    "剔除 ST": st_only, "限制 A 股": a_only,
-                })
-                st.rerun()
+                    "剔除 ST": st_only, "限制 A 股": a_only, "筛选方案": preset,
+                }
+                st.session_state[key(project, "screen_preview")] = (pool, screen, chosen_rules)
             except ValueError as exc:
                 st.error(str(exc))
+    preview = st.session_state.get(key(project, "screen_preview"))
+    if not preview or preview[0] is not pool or preview[1].context != project.context or preview[2]["筛选方案"] != preset:
+        return
+    _, screen, settings = preview
+    previous = project.active_screen
+    previous_names = {r.candidate.key: r.candidate.name for r in previous.rows if r.gate != "剔除"} if previous else {}
+    upcoming = {r.candidate.key for r in screen.rows if r.gate != "剔除"}
+    removed = [name for code, name in previous_names.items() if code not in upcoming]
+    with st.container(border=True, key=key(project, "wb_panel_screen_preview")):
+        st.subheader("本次预览")
+        plain(f"{settings['筛选方案']} · 行业 {'、'.join(settings['行业标签']) or '整份自有资料'} · 上市至少 {settings['最低上市月数']} 个月")
+        plain(f"{screen.scope} 家入池 · {screen.hard_removed} 家规则剔除 · {len(upcoming)} 家可复核。"
+              + (f" 相比当前规则池新增 {len(upcoming - previous_names.keys())} 家、移出 {len(removed)} 家。" if previous else ""))
+        if removed:
+            plain("移出样本举例 " + "、".join(removed[:8]))
+        st.caption("保存后会保留候选证据和筛查结果一致的原复核。改动参数后请重新预览。")
+        if st.button("采用这组预览并生成候选池", key=key(project, "apply_screen")):
+            project.save_screen(screen, settings)
+            st.session_state.pop(key(project, "screen_preview"), None)
+            st.rerun()
 
 
 def _direct_entry(project: Project) -> None:
     with st.expander("导入可比底表或添加指定公司", expanded=not bool(project.roster())):
-        st.caption("已有人选时可直接提交复核。底表中的取价与财务会随公司带入测算，采纳决定在下一步填写。")
+        st.caption(f"已有人选可直接提交复核。底表中的取价与财务会带入测算，修正与权重记在当前比率 {project.policy['method']}。")
         st.download_button("下载可比数据模板", comparable_template_bytes(), file_name="可比数据模板.xlsx",
                            mime=XLSX, on_click="ignore")
         with st.form(key(project, "peer_import"), border=False):
@@ -244,7 +321,7 @@ def pool_page(project: Project, opc_pool: Pool | None) -> None:
         nav_actions(("回到标的画像", "profile"), ("进入三态复核", "review"), disabled=True)
         return
     if project.mode != "archive" and project.profile.route != LISTED:
-        st.info(ROUTE_INFO[project.profile.route])
+        _route_checklist(project)
         nav_actions(("返回标的与口径", "profile"), ("查看工作底稿", "paper"))
         return
     if project.screen and not project.active_screen:

@@ -5,11 +5,12 @@ from html import escape
 
 import streamlit as st
 
+from .guidance import review_suggestion
 from .model_review import ModelConfig, candidate_payload, suggest
 from .opc_package import ARCHIVE_MODEL
 from .presentation import table
 from .project import LISTED, Project, digest
-from .screening import DECISIONS, ScreenRow
+from .screening import DECISIONS, DIMENSION_CHOICES, REVIEW_DIMENSIONS, ScreenRow
 from .ui_common import TONES, badge, counter_cards, current_state, key, nav_actions, page_intro, plain
 
 
@@ -74,11 +75,23 @@ def _details(project: Project, row: ScreenRow) -> None:
             plain(f"最近记录：{saved.reviewer} · {saved.at.replace('T', ' ').replace('+00:00', ' UTC')}", "wb-source-line")
         choices = (*DECISIONS, "待复核")
         form_key = key(project, f"decision_{digest(candidate.key)}_{len(project.audit)}")
+        with st.expander("按四个维度核对"):
+            st.caption("核对主营收入、客户市场、价值链角色以及规模和经营风险。发现差异时可直接补充证据。")
+            cols = st.columns(2)
+            checks = {}
+            for i, label in enumerate(REVIEW_DIMENSIONS):
+                value = saved.dimensions.get(label, "未核对") if saved else "未核对"
+                checks[label] = cols[i % 2].selectbox(
+                    label, DIMENSION_CHOICES, index=DIMENSION_CHOICES.index(value), key=f"{form_key}_dim_{i}",
+                )
+        guidance = review_suggestion(checks)
+        if guidance:
+            plain(guidance, "wb-archive-line")
         with st.form(form_key, border=False):
             st.subheader("记录人工判断" if project.mode != "demo" else "练习三态复核")
             status = st.radio("复核决定", choices, horizontal=True,
                               index=choices.index(saved.state) if saved else None,
-                              help="采纳才会进入估值；存疑待补证据；待复核用于撤回原判断。")
+                              help="采纳后可在估值环节选用，存疑用于待补证据，待复核用于撤回原判断。")
             reason = st.text_area("判断依据", value=saved.reason if saved else "", max_chars=1500, height=94,
                                   placeholder="例如：产品用途和客户相近；但收入以一次性交付为主，需核对订阅收入占比。")
             cite = st.text_input("补充证据定位", value=saved.evidence if saved else "", max_chars=800,
@@ -90,7 +103,7 @@ def _details(project: Project, row: ScreenRow) -> None:
                         raise ValueError("请先选择复核决定。")
                     if status == "采纳" and not (candidate.business or candidate.products or candidate.commentary or cite.strip()):
                         raise ValueError("缺少公司业务资料。采纳前请补充可回查的业务证据定位。")
-                    project.decide(candidate.key, status, reason, reviewer, cite)
+                    project.decide(candidate.key, status, reason, reviewer, cite, checks)
                     st.toast("已保存复核决定")
                     st.rerun()
                 except ValueError as exc:
@@ -110,7 +123,7 @@ def review_page(project: Project) -> None:
     hard = project.screen.hard_removed if archived and project.screen else counts["规则剔除"]
     counter_cards([
         ("待复核", counts["待复核"], "尚未记录人工决定"),
-        ("已采纳", counts["采纳"], "归档复核意见" if archived else "用于后续测算"),
+        ("已采纳", counts["采纳"], "归档复核意见" if archived else "可供各比率选用"),
         ("存疑", counts["存疑"], "待补资料"),
         ("人工剔除", counts["剔除"], f"另有 {hard} 家规则剔除"),
     ])

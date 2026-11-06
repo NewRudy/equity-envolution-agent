@@ -4,6 +4,7 @@ import csv
 import io
 import math
 import re
+from statistics import median
 from typing import Any
 
 import pandas as pd
@@ -11,6 +12,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from .project import AGGREGATIONS, PRICE_POLICIES
 from .screening import code_key, identity, iso_date
 
 
@@ -238,12 +240,19 @@ def calculate_market_method(
     bridge_adjustment: float,
     bridge_reason: str,
     bridge_source: str,
+    *,
+    aggregation: str = "weighted",
+    aggregation_reason: str = "",
+    price_policy: str = "reference",
+    price_lookback: int = 5,
 ) -> dict[str, Any]:
     """Calculate a reviewer-gated market method. No target value is returned until all gates pass."""
     blockers: list[str] = []
     blockers.extend(str(item) for item in target.get("data_quality_blockers", []))
     if method not in {"EV/EBITDA", "P/B", "P/E"}:
         return {"method": method, "status": "待补充", "blockers": ["请选择已支持的市场法比率。"]}
+    if aggregation not in AGGREGATIONS or price_policy not in PRICE_POLICIES or not 1 <= price_lookback <= 90:
+        return {"method": method, "status": "待补充", "blockers": ["请选择有效的取价与倍数汇总设置。"]}
     selected = [row for row in peer_rows if _as_bool(row.get("selected"))]
     if not 3 <= len(selected) <= 8:
         blockers.append(f"纳入的可比公司须为 3–8 家；当前 {len(selected)} 家。")
@@ -303,8 +312,13 @@ def calculate_market_method(
     if method == "P/E" and _text(target.get("earnings_basis")) not in {"归母净利润", "扣非归母净利润"}:
         blockers.append("P/E 法请确认目标净利润为归母或扣非归母口径。")
 
+    denominator_ready = bool(
+        target_value is not None and target_value > 0
+        and (method != "EV/EBITDA" or target_net_debt is not None)
+        and (method != "P/B" or _text(target.get("book_equity_basis")))
+        and (method != "P/E" or _text(target.get("earnings_basis")) in {"归母净利润", "扣非归母净利润"})
+    )
     peer_analysis: list[dict[str, Any]] = []
-    weights: list[float] = []
     for index, peer in enumerate(selected, start=1):
         company = _text(peer.get("company"))
         missing = []
@@ -329,21 +343,19 @@ def calculate_market_method(
                 missing.append("不晚于基准日的实际取价日")
             elif report_end and pricing_date < report_end:
                 missing.append("不早于财报截止日的实际取价日")
+            elif price_policy == "exact" and pricing_date != benchmark:
+                missing.append("基准日当天的取价")
+            elif price_policy == "recent" and (benchmark - pricing_date).days > price_lookback:
+                missing.append(f"基准日前 {price_lookback} 个自然日内的取价")
         if not source:
             missing.append("数据来源")
         if not selection_reason:
             missing.append("入选理由")
-        if not adjustment_reason:
-            missing.append("修正理由")
         market_cap = _number(peer.get("market_cap"))
         factor = _number(peer.get("adjustment_factor"))
         weight_pct = _number(peer.get("weight_pct"))
         if market_cap is None or market_cap <= 0:
             missing.append("正数股权市值")
-        if factor is None or not 0.1 <= factor <= 3.0:
-            missing.append("0.10–3.00 修正系数")
-        if weight_pct is None or not 0 < weight_pct <= 100:
-            missing.append("0–100 之间的正权重")
         if method == "EV/EBITDA":
             ebitda = _number(peer.get("ebitda"))
             net_debt = _number(peer.get("net_debt"))
@@ -381,11 +393,20 @@ def calculate_market_method(
         if raw is not None and not math.isfinite(raw):
             missing.append("可计算的有限倍数")
             raw = None
-        adjusted = raw * factor if raw is not None and factor is not None else None
+        data_gaps = list(dict.fromkeys(missing))
+        correction_valid = factor is not None and 0.1 <= factor <= 3.0 and bool(adjustment_reason)
+        if not adjustment_reason:
+            missing.append("修正理由")
+        if factor is None or not 0.1 <= factor <= 3.0:
+            missing.append("0.10–3.00 修正系数")
+        if aggregation == "weighted" and (weight_pct is None or not 0 < weight_pct <= 100):
+            missing.append("0–100 之间的正权重")
+        adjusted = raw * factor if raw is not None and correction_valid else None
+        if adjusted is not None and not math.isfinite(adjusted):
+            missing.append("可计算的有限修正倍数")
+            adjusted = None
         if missing:
             blockers.append(f"{company}：补齐或核对" + "、".join(dict.fromkeys(missing)) + "。")
-        if weight_pct is not None and weight_pct > 0:
-            weights.append(weight_pct)
         peer_analysis.append({
             "company": company,
             "ticker": _text(peer.get("ticker")),
@@ -410,17 +431,31 @@ def calculate_market_method(
             "adjustment_reason": adjustment_reason,
             "raw_multiple": raw,
             "adjusted_multiple": adjusted,
+            "data_gaps": data_gaps,
         })
 
-    weight_total = sum(weights)
-    if selected and not math.isclose(weight_total, 100.0, rel_tol=0, abs_tol=0.05):
+    weights = [row["weight_pct"] for row in peer_analysis]
+    valid_weights = bool(weights) and all(weight is not None and 0 < weight <= 100 for weight in weights)
+    weight_total = sum(weight for weight in weights if weight is not None and weight > 0)
+    weights_ready = valid_weights and math.isclose(weight_total, 100.0, rel_tol=0, abs_tol=0.05)
+    if aggregation == "weighted" and selected and not math.isclose(weight_total, 100.0, rel_tol=0, abs_tol=0.05):
         blockers.append(f"纳入公司的权重合计须为 100%；当前为 {weight_total:.2f}%。")
-    valid_peers = [row for row in peer_analysis if row["adjusted_multiple"] is not None]
-    weighted_multiple = None
-    if valid_peers and len(valid_peers) == len(selected) and len(weights) == len(selected) and math.isclose(weight_total, 100.0, rel_tol=0, abs_tol=0.05):
-        weighted_multiple = sum(row["adjusted_multiple"] * (row["weight_pct"] / weight_total) for row in valid_peers)
-        if not math.isfinite(weighted_multiple):
-            blockers.append("加权倍数超出可计算范围，请核对单位与分母。")
+    multiples = [row["adjusted_multiple"] for row in peer_analysis if not row["data_gaps"] and row["adjusted_multiple"] is not None]
+    options = {}
+    if multiples and len(multiples) == len(selected):
+        options["equal"] = sum(value / len(multiples) for value in multiples)
+        options["median"] = median(multiples)
+        if weights_ready:
+            options["weighted"] = sum(value * (weight / weight_total) for value, weight in zip(multiples, weights))
+        options = {mode: value for mode, value in options.items() if math.isfinite(value)}
+    selected_multiple = options.get(aggregation)
+    if selected_multiple is None and not blockers:
+        blockers.append("选用倍数超出可计算范围，请核对单位与分母。")
+    for row in peer_analysis:
+        row["effective_weight_pct"] = (
+            100 / len(selected) if aggregation == "equal" else
+            100 * row["weight_pct"] / weight_total if aggregation == "weighted" and weights_ready else None
+        )
 
     output: dict[str, Any] = {
         "method": method,
@@ -429,7 +464,15 @@ def calculate_market_method(
         "confirmations": dict(confirmations),
         "reviewer": reviewer.strip(),
         "peer_analysis": peer_analysis,
-        "weighted_multiple": weighted_multiple,
+        "weighted_multiple": selected_multiple,
+        "selected_multiple": selected_multiple,
+        "multiple_options": options,
+        "aggregation": aggregation,
+        "aggregation_label": AGGREGATIONS[aggregation],
+        "aggregation_reason": aggregation_reason,
+        "price_policy": PRICE_POLICIES[price_policy],
+        "price_lookback": price_lookback if price_policy == "recent" else None,
+        "denominator_ready": denominator_ready,
         "dlom_pct": dlom,
         "dlom_reason": dlom_reason.strip(),
         "dlom_source": dlom_source.strip(),
@@ -447,7 +490,7 @@ def calculate_market_method(
         "target_source": _text(target.get("source")),
         "target_provenance": dict(target.get("provenance", {})),
     }
-    if blockers or weighted_multiple is None or not valid_peers:
+    if blockers or selected_multiple is None or not multiples:
         return output
 
     def equity_at(multiple: float) -> float:
@@ -457,15 +500,15 @@ def calculate_market_method(
             pre_discount = target_value * multiple
         return pre_discount * (1 - dlom / 100) + adjustment
 
-    multiples = [row["adjusted_multiple"] for row in valid_peers]
-    amounts = [equity_at(x) for x in (weighted_multiple, min(multiples), max(multiples))]
+    amounts = [equity_at(x) for x in (selected_multiple, min(multiples), max(multiples))]
     if not all(math.isfinite(x) for x in amounts):
         output["status"] = "待补充"
         output["blockers"].append("股权价值超出可计算范围，请核对金额单位。")
         return output
     output["status"] = "已计算，待人工复核"
     output["result"] = {
-        "weighted_multiple": weighted_multiple,
+        "weighted_multiple": selected_multiple,
+        "selected_multiple": selected_multiple,
         "low_multiple": min(multiples),
         "high_multiple": max(multiples),
         "equity_value": amounts[0],

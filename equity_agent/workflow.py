@@ -6,8 +6,8 @@ from dataclasses import asdict
 from typing import Any
 
 from .agent import run_agent
-from .market_method import PEER_KEYS, _number, calculate_market_method
-from .project import LISTED, Project, stamp
+from .market_method import PEER_KEYS, calculate_market_method
+from .project import AGGREGATIONS, LISTED, METHODS, PRICE_POLICIES, VALUE_DRIVERS, Project, stamp
 from .screening import clean, iso_date
 from .valuation import ValuationAssumptions
 
@@ -30,8 +30,16 @@ def available_records(project: Project):
     )
 
 
-def target_input(project: Project) -> dict:
+def calculation_records(project: Project, year: str | None = None):
     records = available_records(project)
+    selected = project.policy["target_year"] if year is None else year
+    if not selected:
+        return records
+    return [r for r in records if r.year <= selected] if any(r.year == selected for r in records) else []
+
+
+def target_input(project: Project, year: str | None = None) -> dict:
+    records = calculation_records(project, year)
     latest = records[-1] if records else None
     blockers = []
     if project.mode == "archive":
@@ -44,6 +52,8 @@ def target_input(project: Project) -> dict:
         blockers.append("请在标的画像填写业务资料来源。")
     if project.screen and not project.active_screen:
         blockers.append("标的或口径已改动，请重新生成候选池并复核。")
+    if (project.policy["target_year"] if year is None else year) and not records:
+        blockers.append("已选财报年度不在当前可用报表中。请补齐资料或重新选择年度。")
     if len({record.year for record in records}) != len(records):
         blockers.append("标的财务表有重复年度，请核实后重新上传。")
     if any("未标单位" in location for record in records for location in record.provenance.values()):
@@ -58,24 +68,51 @@ def target_input(project: Project) -> dict:
     }
 
 
-def method_indicators(project: Project) -> list[tuple[str, str, bool]]:
-    target = target_input(project)
-    ebitda, equity, income = (_number(target[k]) for k in ("ebitda", "book_equity", "net_income"))
-    return [
-        ("EV/EBITDA", "需要正 EBITDA 和净债务；对齐经营口径及融资桥接。", bool(ebitda and ebitda > 0 and target["net_debt"] is not None)),
-        ("P/B", "需要正账面权益；比较双方须用同一合并或归母口径。", bool(equity and equity > 0)),
-        ("P/E", "需要正归母净利润；统一归母或扣非口径，核对一次性损益。", bool(income and income > 0)),
-    ]
+def method_indicators(project: Project, year: str | None = None, driver: str | None = None) -> dict[str, dict]:
+    """Apply the calculator's checks to each candidate without approving a valuation."""
+    adopted = project.adopted()
+    target = target_input(project, year)
+    request = market_request(project, {}, "")
+    request.update(target=target, peer_rows=list(adopted.values()), aggregation="equal")
+    options = {}
+    for method in METHODS:
+        check = calculate_market_method(**(request | {"method": method}))
+        aligned = []
+        gaps = {}
+        for key, peer in zip(adopted, check["peer_analysis"]):
+            if peer["data_gaps"]:
+                gaps[key] = peer["data_gaps"]
+            else:
+                aligned.append(key)
+        target_ready = check["denominator_ready"] and not target["data_quality_blockers"]
+        options[method] = {
+            "target_ready": target_ready,
+            "aligned": aligned if target_ready else [],
+            "gaps": gaps,
+            "recommended": False,
+        }
+    driver = project.policy["value_driver"] if driver is None else driver
+    if driver in options and len(options[driver]["aligned"]) >= 3:
+        options[driver]["recommended"] = True
+        return options
+    best = max(len(item["aligned"]) for item in options.values())
+    if best >= 3:
+        for option in options.values():
+            option["recommended"] = option["target_ready"] and len(option["aligned"]) == best
+    return options
 
 
 def market_request(project: Project, confirmed: dict[str, bool], reviewer: str) -> dict:
     return {
         "method": project.policy["method"],
-        "peer_rows": project.selected(),
+        "peer_rows": project.selected(project.policy["method"]),
         "target": target_input(project),
         "confirmations": {key: bool(confirmed.get(key)) for key in CHECKS},
         "reviewer": clean(reviewer, 80),
-        **{key: project.policy[key] for key in ("dlom_pct", "dlom_reason", "dlom_source", "bridge_adjustment", "bridge_reason", "bridge_source")},
+        **{key: project.policy[key] for key in (
+            "dlom_pct", "dlom_reason", "dlom_source", "bridge_adjustment", "bridge_reason", "bridge_source",
+            "aggregation", "aggregation_reason", "price_policy", "price_lookback",
+        )},
     }
 
 
@@ -87,7 +124,7 @@ def dcf_blockers(project: Project) -> list[str]:
     if not project.policy["include_dcf"]:
         return []
     blockers = []
-    records = available_records(project)
+    records = calculation_records(project)
     revenue = records[-1].metrics.get("revenue") if records else None
     if revenue is None or revenue <= 0:
         blockers.append("选用 DCF 时，请提供正的标的营业收入。")
@@ -108,11 +145,11 @@ def compute(project: Project, confirmed: dict[str, bool], reviewer: str) -> dict
         revenue_growth=policy["growth_pct"] / 100, fcf_margin=policy["fcf_pct"] / 100,
         wacc=policy["wacc_pct"] / 100, terminal_growth=policy["terminal_pct"] / 100, forecast_years=policy["years"],
     )
-    result = run_agent(available_records(project), assumptions, request, include_dcf=policy["include_dcf"])
+    result = run_agent(calculation_records(project), assumptions, request, include_dcf=policy["include_dcf"])
     if not result["market_method"].get("result"):
         return result
     project.reviewer = request["reviewer"]
-    project.note("生成估值草稿", f"{policy['method']} · {len(request['peer_rows'])} 家 · {project.profile.benchmark}",
+    project.note("生成估值草稿", f"{policy['method']} · {AGGREGATIONS[policy['aggregation']]} · {len(request['peer_rows'])} 家 · {project.profile.benchmark}",
                  actor=project.reviewer, evidence=policy["method_reason"])
     result.update(run_at=stamp(), is_demo=project.mode == "demo")
     if project.mode == "demo":
@@ -144,6 +181,8 @@ def draft(project: Project) -> dict:
 def workbench_details(project: Project) -> dict[str, Any]:
     screen = project.active_screen
     selected = project.roster()
+    method = project.policy["method"]
+    active_samples = set(project.sample_sets.get(method, project.adopted())) if project.profile.route == LISTED and project.mode != "archive" else set()
     rows = []
     for row in selected.values():
         candidate = row.candidate
@@ -158,10 +197,29 @@ def workbench_details(project: Project) -> dict[str, Any]:
             "period": candidate.period, "review_state": decision.state if decision else "待复核" if row.gate != "剔除" else "",
             "review_reason": decision.reason if decision else "", "actor": decision.reviewer if decision else "",
             "review_evidence": decision.evidence if decision else "",
+            "review_dimensions": " / ".join(f"{k} {v}" for k, v in decision.dimensions.items()) if decision else "",
+            "method_sample": "是" if candidate.key in active_samples and decision and decision.state == "采纳" else "",
             "at": decision.at if decision else "",
             "live_model": model.get("model"),
             "live_advice": " / ".join(filter(None, [model.get("verdict"), model.get("reason"), *model.get("evidence", [])])),
         })
+    choices = [
+        ("工作路径", project.profile.route, project.route_reason),
+        ("已有资料", " / ".join(project.route_materials), ""),
+    ]
+    for label, value in project.route_documents.get(project.profile.route, {}).items():
+        choices.append(("路径取证", label, value))
+    if project.profile.route == LISTED and project.mode != "archive":
+        policy = project.policy
+        choices.extend((
+            ("主比率", method, policy["method_reason"]),
+            ("价值驱动", VALUE_DRIVERS[policy["value_driver"]], ""),
+            ("财报年度", target_input(project)["year"] or "待补", ""),
+            ("本法样本", f"{len(project.selected(method))} 家", project.sample_reasons.get(method, "")),
+            ("倍数汇总", AGGREGATIONS[policy["aggregation"]], policy["aggregation_reason"]),
+            ("取价规则", PRICE_POLICIES[policy["price_policy"]],
+             f"{policy['price_lookback']} 个自然日" if policy["price_policy"] == "recent" else ""),
+        ))
     return {
         "mode": project.mode,
         "profile": asdict(project.profile),
@@ -180,7 +238,7 @@ def workbench_details(project: Project) -> dict[str, Any]:
             **(screen.archive_counts if screen else {}),
         },
         "rules": {key: value for key, value in project.rules.items() if key != "run"},
-        "rows": rows, "audit": project.audit,
+        "choices": choices, "rows": rows, "audit": project.audit,
     }
 
 

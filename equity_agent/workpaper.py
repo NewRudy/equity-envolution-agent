@@ -53,7 +53,8 @@ def create_workpaper_excel(
         summary.append([market.get("method", "市场法"), None, None, None, "未满足市场法计算/复核条件；请查看 Review_Queue"])
     summary.append([])
     summary.append(["市场法公式", _market_formula(market["method"]) if market.get("method") else "未执行"])
-    summary.append(["市场倍数", market.get("weighted_multiple") if market_result else None, "经修正、按人工权重加权；倍数来源见 Comparable_Analysis"])
+    summary.append(["市场倍数", market.get("selected_multiple", market.get("weighted_multiple")) if market_result else None,
+                    market.get("aggregation_label") or "倍数来源见 Comparable_Analysis"])
 
     assumptions = workbook.create_sheet("假设与口径")
     assumptions.append(["假设项", "取值", "说明"])
@@ -107,7 +108,7 @@ def create_workpaper_excel(
     peer_sheet = workbook.create_sheet("Comparable_Analysis")
     peer_sheet.append([
         "纳入公司", "代码", "报告期", "财报截止日", "实际取价日", "取价依据", "股权市值（亿元）", "净债务（亿元）", "其他 EV 调整（亿元）", "EV 调整说明", "EBITDA（亿元）",
-        "账面权益（亿元）", "账面权益口径", "净利润（亿元）", "净利润口径", "未修正倍数", "修正系数", "修正后倍数", "权重（%）",
+        "账面权益（亿元）", "账面权益口径", "净利润（亿元）", "净利润口径", "未修正倍数", "修正系数", "修正后倍数", "实际计算权重（%）",
         "入选理由", "修正理由", "数据来源", "原文件位置",
     ])
     for peer in market.get("peer_analysis", []):
@@ -116,11 +117,11 @@ def create_workpaper_excel(
             peer.get("net_debt"), peer.get("other_ev_adjustment"), peer.get("ev_adjustment_reason"),
             peer.get("ebitda"), peer.get("book_equity"), peer.get("book_equity_basis"), peer.get("net_income"), peer.get("earnings_basis"),
             peer.get("raw_multiple"), peer.get("adjustment_factor"), peer.get("adjusted_multiple"),
-            peer.get("weight_pct"), peer.get("selection_reason"), peer.get("adjustment_reason"),
+            peer.get("effective_weight_pct", peer.get("weight_pct")), peer.get("selection_reason"), peer.get("adjustment_reason"),
             peer.get("source"), peer.get("source_location"),
         ])
     peer_sheet.append([])
-    peer_sheet.append(["选用倍数", market.get("weighted_multiple") if market_result else None])
+    peer_sheet.append(["选用倍数", market.get("selected_multiple", market.get("weighted_multiple")) if market_result else None])
 
     valuation_sheet = workbook.create_sheet("估值计算")
     valuation_sheet.append(["方法/情景", "企业价值（亿元）", "股权价值（亿元）", "计算信息"])
@@ -129,14 +130,14 @@ def create_workpaper_excel(
     if market_result:
         valuation_sheet.append([
             market.get("method"), None, market_result.get("equity_value"),
-            f"加权修正倍数 {market_result.get('weighted_multiple'):.4g}x；DLOM {market.get('dlom_pct')}%",
+            f"{market.get('aggregation_label', '修正倍数')} {market_result.get('selected_multiple', market_result.get('weighted_multiple')):.4g}x，流动性折扣 {market.get('dlom_pct')}%",
         ])
         valuation_sheet.append(["市场法低端", None, market_result.get("low_equity_value"), "所选样本修正倍数最小值"])
         valuation_sheet.append(["市场法高端", None, market_result.get("high_equity_value"), "所选样本修正倍数最大值"])
     valuation_sheet.append([])
-    valuation_sheet.append(["EV/EBITDA 公式", "可比 EV = 股权市值 + 净债务 + 其他 EV 调整；目标股权价值 = (目标 EBITDA × 加权修正倍数 - 目标净债务) × (1 - DLOM) + 其他股权调整。"])
-    valuation_sheet.append(["P/B 公式", "可比 P/B = 股权市值 / 账面权益；目标股权价值 = 目标账面权益 × 加权修正倍数 × (1 - DLOM) + 其他股权调整。"])
-    valuation_sheet.append(["P/E 公式", "可比 P/E = 股权市值 / 同口径归母净利润；目标股权价值 = 目标同口径归母净利润 × 加权修正倍数 × (1 - DLOM) + 其他股权调整。"])
+    valuation_sheet.append(["EV/EBITDA 公式", "可比 EV = 股权市值 + 净债务 + 其他 EV 调整。目标股权价值 = (目标 EBITDA × 选用倍数 - 目标净债务) × (1 - DLOM) + 其他股权调整。"])
+    valuation_sheet.append(["P/B 公式", "可比 P/B = 股权市值 / 账面权益。目标股权价值 = 目标账面权益 × 选用倍数 × (1 - DLOM) + 其他股权调整。"])
+    valuation_sheet.append(["P/E 公式", "可比 P/E = 股权市值 / 同口径归母净利润。目标股权价值 = 目标同口径归母净利润 × 选用倍数 × (1 - DLOM) + 其他股权调整。"])
     if result.get("include_dcf", True):
         valuation_sheet.append(["DCF 公式", "逐年预测收入和自由现金流并折现；股权价值 = 企业价值 - 最新年度净债务。"])
 
@@ -161,10 +162,10 @@ def create_workpaper_excel(
 
 def _market_formula(method: str) -> str:
     if method == "P/B":
-        return "目标账面权益 × 加权修正 P/B × (1 - 流动性折扣) + 其他股权调整"
+        return "目标账面权益 × 选用 P/B × (1 - 流动性折扣) + 其他股权调整"
     if method == "P/E":
-        return "目标归母净利润 × 加权修正 P/E × (1 - 流动性折扣) + 其他股权调整"
-    return "(目标 EBITDA × 加权修正 EV/EBITDA - 目标净债务) × (1 - 流动性折扣) + 其他股权调整"
+        return "目标归母净利润 × 选用 P/E × (1 - 流动性折扣) + 其他股权调整"
+    return "(目标 EBITDA × 选用 EV/EBITDA - 目标净债务) × (1 - 流动性折扣) + 其他股权调整"
 
 
 def _add_workbench_sheets(workbook: Workbook, details: dict) -> None:
@@ -190,6 +191,7 @@ def _add_workbench_sheets(workbook: Workbook, details: dict) -> None:
         ("source", "来源"), ("period", "资料期"), ("review_state", "人工状态"), ("review_reason", "复核理由"),
         ("review_evidence", "人工补充证据"), ("actor", "复核人"), ("at", "记录时间 UTC"),
         ("live_model", "补充核对模型"), ("live_advice", "补充核对与原文"),
+        ("review_dimensions", "逐维复核"), ("method_sample", "本法选用"),
     ]
     roster.append([label for _, label in columns])
     for row in details["rows"]:
@@ -198,6 +200,10 @@ def _add_workbench_sheets(workbook: Workbook, details: dict) -> None:
     journal.append(["记录时间 UTC", "动作", "填写人", "公司代码", "详情", "来源"])
     for item in details["audit"]:
         journal.append([item[key] for key in ("at", "action", "actor", "code", "detail", "evidence")])
+    choices = workbook.create_sheet("方案选择与依据", 4)
+    choices.append(["决策", "本次选择", "说明或来源"])
+    for row in details.get("choices", []):
+        choices.append(list(row))
 
 
 def _format_workbook(workbook: Workbook) -> None:

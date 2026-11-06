@@ -93,6 +93,8 @@ def demo_project() -> Project:
     })
     project.save_peer_inputs(peers, "合成估值参数")
     for row in peers:
+        for method in ("P/B", "P/E"):
+            project.store_peer_values(row["ticker"], method, row)
         project.decide(row["ticker"], "采纳", "演示预设：产品、工厂客户和收费模式与标的相近，规模仍需核对。", "演示预设")
     project.decide("DEMO-05", "剔除", "演示预设：主营收入来自设备代理，软件是附带模块。", "演示预设")
     project.decide("DEMO-06", "存疑", "演示预设：缺少主营产品收入拆分，暂无法确认订阅业务。", "演示预设")

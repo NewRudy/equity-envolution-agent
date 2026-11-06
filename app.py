@@ -143,7 +143,9 @@ def home(opc: OPCPackage | None) -> None:
     )
     a, b, _ = st.columns([1, 1, 1.25])
     if a.button("＋ 新建估值项目", type="primary", width="stretch"):
-        activate(Project(), "profile")
+        project = Project()
+        project.policy["aggregation"] = "equal"
+        activate(project, "profile")
     if b.button("打开合成示例", width="stretch"):
         activate(demo_project(), "review")
     st.html('<div class="wb-section-label"><span>资料与项目</span></div>')

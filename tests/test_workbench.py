@@ -15,7 +15,7 @@ from equity_agent.model_review import ModelConfig, suggest
 from equity_agent.opc_package import read_opc_package
 from equity_agent.project import Profile, dump_project, restore_project
 from equity_agent.screening import Candidate, Pool, removed_by_rule, run_screen
-from equity_agent.workflow import CHECKS, compute, draft, inspect, workbench_details
+from equity_agent.workflow import CHECKS, compute, draft, inspect, method_indicators, workbench_details
 from equity_agent.workpaper import create_workpaper_excel
 
 
@@ -47,6 +47,56 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(reopened.selected(), [])
         self.assertTrue(any(item["action"] == "三态复核" for item in reopened.audit))
         self.assertTrue(any("重新生成" in item for item in inspect(reopened)["blockers"]))
+
+    def test_wider_screen_preserves_existing_evidence_and_requires_new_review_for_new_candidate(self):
+        p = demo_project()
+        compute(p, dict.fromkeys(CHECKS, True), "演示")
+        original = p.screen
+        candidates = tuple(row.candidate for row in original.rows)
+        broader = run_screen(
+            Pool(original.source, candidates), as_of=p.profile.benchmark, tags=("工业软件",),
+            terms=("排产软件", "生产执行系统"), caution_terms=("设备代理", "通用办公软件"),
+            listing_months=0, context=p.context,
+        )
+        prior = p.reviews["DEMO-01"]
+        p.save_screen(broader, {"最低上市月数": 0})
+        self.assertIsNone(p.result)
+        self.assertEqual(len(p.adopted()), 4)
+        self.assertEqual(p.decision(p.roster()["DEMO-01"]).at, prior.at)
+        self.assertEqual(p.roster()["DEMO-07"].gate, "通过")
+        self.assertIsNone(p.decision(p.roster()["DEMO-07"]))
+
+    def test_selected_year_quote_policy_and_median_apply_to_this_method_only(self):
+        p = demo_project()
+        p.save_samples("EV/EBITDA", ["DEMO-01", "DEMO-02", "DEMO-03"], "合成样本范围")
+        p.policy.update(target_year="2024", price_policy="exact", aggregation="median")
+        self.assertFalse(method_indicators(p)["EV/EBITDA"]["recommended"])
+        for key in p.sample_sets["EV/EBITDA"]:
+            p.peers[key]["report_end"] = "2024-12-31"
+        p.peers["DEMO-01"]["pricing_date"] = "2026-11-02"
+        self.assertTrue(any("基准日当天" in issue for issue in inspect(p)["blockers"]))
+        p.policy.update(price_policy="recent", price_lookback=2)
+        result = compute(p, dict.fromkeys(CHECKS, True), "演示")["market_method"]
+        self.assertEqual(result["aggregation_label"], "中位数")
+        self.assertAlmostEqual(result["result"]["equity_value"], 1.2 * 10 - 1.5)
+        self.assertTrue(all(row["effective_weight_pct"] is None for row in result["peer_analysis"]))
+        self.assertEqual(len(p.selected("P/E")), 4)
+        amended = p.peers["DEMO-01"] | p.peer_parameters("DEMO-01", "P/E") | {"adjustment_factor": 1.2}
+        p.store_peer_values("DEMO-01", "P/E", amended)
+        p = restore_project(dump_project(p))
+        self.assertEqual(p.selected("EV/EBITDA")[0]["adjustment_factor"], 1.0)
+        self.assertEqual(p.selected("P/E")[0]["adjustment_factor"], 1.2)
+
+    def test_pre_update_draft_retains_its_saved_method_parameters(self):
+        p = demo_project()
+        payload = json.loads(dump_project(p))
+        for row in payload["peers"].values():
+            row.update(row.pop("method_parameters")["EV/EBITDA"])
+        for key in ("target_year", "aggregation", "price_policy"):
+            payload["policy"].pop(key)
+        restored = restore_project(json.dumps(payload).encode())
+        result = compute(restored, dict.fromkeys(CHECKS, True), "演示")["market_method"]
+        self.assertAlmostEqual(result["result"]["equity_value"], 17.175)
 
     def test_pe_blocks_future_quote_and_mismatched_basis(self):
         p = demo_project()
