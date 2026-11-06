@@ -14,6 +14,7 @@ def create_workpaper_excel(
     company_name: str,
     records: list[FinancialRecord],
     result: dict[str, Any],
+    workbench: dict[str, Any] | None = None,
 ) -> bytes:
     workbook = Workbook()
     summary = workbook.active
@@ -24,6 +25,9 @@ def create_workpaper_excel(
     summary.append(["分析状态", result.get("status", "待复核")])
     summary.append(["市场法复核人", result.get("market_method", {}).get("reviewer", "未填写")])
     summary.append(["市场法状态", result.get("market_method", {}).get("status", "待补充")])
+    if workbench:
+        summary.append(["项目类型", {"real": "真实项目", "demo": "合成示例", "archive": "历史回放"}[workbench["mode"]]])
+        summary.append(["归档筛选日" if workbench["mode"] == "archive" else "估值基准日", workbench["profile"]["benchmark"]])
     summary.append(["运行时间", result.get("run_at", "未记录")])
     summary.append(["范围边界", result.get("scope_note", "估值分析草稿，须由专业人员复核。")])
     summary.append([])
@@ -48,8 +52,8 @@ def create_workpaper_excel(
     else:
         summary.append([market.get("method", "市场法"), None, None, None, "未满足市场法计算/复核条件；请查看 Review_Queue"])
     summary.append([])
-    summary.append(["市场法公式", _market_formula(market.get("method", "EV/EBITDA"))])
-    summary.append(["市场倍数", market.get("weighted_multiple"), "经修正、按人工权重加权；倍数来源见 Comparable_Analysis"])
+    summary.append(["市场法公式", _market_formula(market["method"]) if market.get("method") else "未执行"])
+    summary.append(["市场倍数", market.get("weighted_multiple") if market_result else None, "经修正、按人工权重加权；倍数来源见 Comparable_Analysis"])
 
     assumptions = workbook.create_sheet("假设与口径")
     assumptions.append(["假设项", "取值", "说明"])
@@ -68,6 +72,9 @@ def create_workpaper_excel(
             assumptions.append([label, display, f"{unit}；使用者输入，需结合原始依据复核"])
     assumptions.append(["目标公司净债务", market.get("target_net_debt"), "最新年度财务表；EV/EBITDA 法使用"])
     assumptions.append(["目标账面权益口径", market.get("target_book_equity_basis"), "P/B 法使用"])
+    assumptions.append(["目标净利润口径", market.get("target_earnings_basis"), "P/E 法使用"])
+    assumptions.append(["所用比率与理由", market.get("method"), market.get("method_reason")])
+    assumptions.append(["所用财务截止日", market.get("target_report_end"), "截至基准日的标的年报；披露日期由使用者核实"])
     assumptions.append(["目标数据来源", market.get("target_source"), "所选最新年度目标公司记录"])
     assumptions.append(["目标指标定位", "; ".join(f"{key}={value}" for key, value in market.get("target_provenance", {}).items()), "回到财务数据来源页核验"])
     assumptions.append(["流动性折扣", market.get("dlom_pct"), "百分数；理由和来源由复核人填写"])
@@ -99,21 +106,21 @@ def create_workpaper_excel(
 
     peer_sheet = workbook.create_sheet("Comparable_Analysis")
     peer_sheet.append([
-        "纳入公司", "报告期", "取价依据", "股权市值（亿元）", "净债务（亿元）", "其他 EV 调整（亿元）", "EV 调整说明", "EBITDA（亿元）",
-        "账面权益（亿元）", "账面权益口径", "未修正倍数", "修正系数", "修正后倍数", "权重（%）",
+        "纳入公司", "代码", "报告期", "财报截止日", "实际取价日", "取价依据", "股权市值（亿元）", "净债务（亿元）", "其他 EV 调整（亿元）", "EV 调整说明", "EBITDA（亿元）",
+        "账面权益（亿元）", "账面权益口径", "净利润（亿元）", "净利润口径", "未修正倍数", "修正系数", "修正后倍数", "权重（%）",
         "入选理由", "修正理由", "数据来源", "原文件位置",
     ])
     for peer in market.get("peer_analysis", []):
         peer_sheet.append([
-            peer.get("company"), peer.get("period"), peer.get("price_basis"), peer.get("market_cap"),
+            peer.get("company"), peer.get("ticker"), peer.get("period"), peer.get("report_end"), peer.get("pricing_date"), peer.get("price_basis"), peer.get("market_cap"),
             peer.get("net_debt"), peer.get("other_ev_adjustment"), peer.get("ev_adjustment_reason"),
-            peer.get("ebitda"), peer.get("book_equity"), peer.get("book_equity_basis"),
+            peer.get("ebitda"), peer.get("book_equity"), peer.get("book_equity_basis"), peer.get("net_income"), peer.get("earnings_basis"),
             peer.get("raw_multiple"), peer.get("adjustment_factor"), peer.get("adjusted_multiple"),
             peer.get("weight_pct"), peer.get("selection_reason"), peer.get("adjustment_reason"),
             peer.get("source"), peer.get("source_location"),
         ])
     peer_sheet.append([])
-    peer_sheet.append(["选用倍数", market.get("weighted_multiple")])
+    peer_sheet.append(["选用倍数", market.get("weighted_multiple") if market_result else None])
 
     valuation_sheet = workbook.create_sheet("估值计算")
     valuation_sheet.append(["方法/情景", "企业价值（亿元）", "股权价值（亿元）", "计算信息"])
@@ -129,6 +136,7 @@ def create_workpaper_excel(
     valuation_sheet.append([])
     valuation_sheet.append(["EV/EBITDA 公式", "可比 EV = 股权市值 + 净债务 + 其他 EV 调整；目标股权价值 = (目标 EBITDA × 加权修正倍数 - 目标净债务) × (1 - DLOM) + 其他股权调整。"])
     valuation_sheet.append(["P/B 公式", "可比 P/B = 股权市值 / 账面权益；目标股权价值 = 目标账面权益 × 加权修正倍数 × (1 - DLOM) + 其他股权调整。"])
+    valuation_sheet.append(["P/E 公式", "可比 P/E = 股权市值 / 同口径归母净利润；目标股权价值 = 目标同口径归母净利润 × 加权修正倍数 × (1 - DLOM) + 其他股权调整。"])
     if result.get("include_dcf", True):
         valuation_sheet.append(["DCF 公式", "逐年预测收入和自由现金流并折现；股权价值 = 企业价值 - 最新年度净债务。"])
 
@@ -143,6 +151,8 @@ def create_workpaper_excel(
     for action in result.get("next_actions", []):
         review.append([action])
 
+    if workbench:
+        _add_workbench_sheets(workbook, workbench)
     _format_workbook(workbook)
     buffer = io.BytesIO()
     workbook.save(buffer)
@@ -152,7 +162,42 @@ def create_workpaper_excel(
 def _market_formula(method: str) -> str:
     if method == "P/B":
         return "目标账面权益 × 加权修正 P/B × (1 - 流动性折扣) + 其他股权调整"
+    if method == "P/E":
+        return "目标归母净利润 × 加权修正 P/E × (1 - 流动性折扣) + 其他股权调整"
     return "(目标 EBITDA × 加权修正 EV/EBITDA - 目标净债务) × (1 - 流动性折扣) + 其他股权调整"
+
+
+def _add_workbench_sheets(workbook: Workbook, details: dict) -> None:
+    scope = workbook.create_sheet("标的与筛选口径", 1)
+    scope.append(["项目", "记录"])
+    for key, label in (
+        ("name", "标的名称"), ("benchmark", "归档筛选日" if details["mode"] == "archive" else "估值基准日"), ("route", "估值路径"),
+        ("products", "主营产品"), ("customers", "客户类型"), ("business_model", "商业模式"),
+        ("difference", "重点排查的差异"), ("source", "标的业务资料来源"),
+    ):
+        scope.append([label, details["profile"].get(key)])
+    for label, value in details["reference_profile"]:
+        scope.append([label, value])
+    for key, value in details["scope"].items():
+        scope.append([key, value])
+    for key, value in details["rules"].items():
+        scope.append([key, " / ".join(map(str, value)) if isinstance(value, (list, tuple)) else str(value)])
+
+    roster = workbook.create_sheet("候选与三态复核", 2)
+    columns = [
+        ("code", "代码"), ("company", "公司"), ("tags", "行业标签"), ("gate", "规则状态"), ("rule", "规则编号"),
+        ("suggestion", "初筛建议"), ("suggestion_reason", "初筛理由"), ("evidence", "证据摘录或归档产品"),
+        ("source", "来源"), ("period", "资料期"), ("review_state", "人工状态"), ("review_reason", "复核理由"),
+        ("review_evidence", "人工补充证据"), ("actor", "复核人"), ("at", "记录时间 UTC"),
+        ("live_model", "补充核对模型"), ("live_advice", "补充核对与原文"),
+    ]
+    roster.append([label for _, label in columns])
+    for row in details["rows"]:
+        roster.append([row.get(key) for key, _ in columns])
+    journal = workbook.create_sheet("操作记录", 3)
+    journal.append(["记录时间 UTC", "动作", "填写人", "公司代码", "详情", "来源"])
+    for item in details["audit"]:
+        journal.append([item[key] for key in ("at", "action", "actor", "code", "detail", "evidence")])
 
 
 def _format_workbook(workbook: Workbook) -> None:
@@ -168,4 +213,6 @@ def _format_workbook(workbook: Workbook) -> None:
             sheet.column_dimensions[column_letter].width = min(max(max_width + 2, 12), 60)
         for row in sheet.iter_rows(min_row=2):
             for cell in row:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
                 cell.alignment = Alignment(vertical="top", wrap_text=True)

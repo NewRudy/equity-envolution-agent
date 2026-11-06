@@ -10,3 +10,5 @@ __pycache__/
 *.pdf
 !sample_data/*.pdf
 .DS_Store
+OPC可比池工作台_交付包_*.zip
+*_工作台草稿.json

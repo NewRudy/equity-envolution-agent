@@ -1,123 +1,92 @@
 from __future__ import annotations
 
-import io
+import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from openpyxl import load_workbook
 from streamlit.testing.v1 import AppTest
 
 from equity_agent.demo import demo_comparables, demo_records
-from equity_agent.workpaper import create_workpaper_excel
+from equity_agent.workflow import CHECKS
 
 
 APP = Path(__file__).resolve().parents[1] / "app.py"
 
 
-def button(app: AppTest, label: str):
-    return next(item for item in app.button if item.label == label)
+def widget(group, label):
+    return next(item for item in group if item.label == label)
 
 
-def checkbox(app: AppTest, label: str):
-    return next(item for item in app.checkbox if item.label == label)
+class WorkbenchFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(os.environ, {"APP_PASSWORD": "", "OPC_PACKAGE_PATH": ""})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.app = AppTest.from_file(str(APP), default_timeout=20).run()
+        self.assert_no_exception()
 
+    def click(self, label):
+        widget(self.app.button, label).click().run()
+        self.assert_no_exception()
 
-class GuidedWorkflowTests(unittest.TestCase):
-    def assert_no_exception(self, app: AppTest) -> None:
-        self.assertEqual([str(item.value) for item in app.exception], [])
+    def assert_no_exception(self):
+        self.assertEqual([str(e.value) for e in self.app.exception], [])
 
-    def ready_peers_step(self) -> AppTest:
-        app = AppTest.from_file(str(APP), default_timeout=30).run()
-        button(app, "开始我的估值").click().run()
-        app.session_state["ui_records"] = demo_records()
-        app.session_state["ui_financial_name"] = "uploaded-fixture.csv"
-        next(item for item in app.text_input if item.label == "你要估值的公司叫什么？").set_value("流程验证公司").run()
-        button(app, "下一步：选择可比公司").click().run()
-        app.session_state["ui_peers"] = demo_comparables()
-        app.session_state["ui_peer_revision"] += 1
-        app.run()
-        self.assert_no_exception(app)
-        return app
+    @property
+    def project(self):
+        return self.app.session_state["wb_projects"][self.app.session_state["wb_active"]]
 
-    def confirm_inputs(self, app: AppTest) -> None:
-        next(item for item in app.text_input if item.label == "本次由谁复核？").set_value("验证人员").run()
-        for label in (
-            "目标公司的数据已核对",
-            "可比公司的业务、期间和取价依据已核对",
-            "净债务、权益与其他调整口径已核对",
-            "本次流动性折扣与股权调整已确认",
-        ):
-            checkbox(app, label).check().run()
+    def test_demo_keeps_its_project_when_starting_a_real_one(self):
+        self.click("打开合成示例")
+        example = self.project
+        self.assertEqual(self.app.session_state["wb_page"], "review")
+        self.click("进入估值测算")
+        self.click("生成合成估值草稿")
+        self.assertTrue(example.result["is_demo"])
+        self.assertAlmostEqual(example.result["market_method"]["result"]["equity_value"], 17.175)
+        self.click("工作台总览")
+        self.click("＋ 新建估值项目")
+        self.assertEqual(self.project.mode, "real")
+        self.assertEqual(self.project.selected(), [])
+        self.assertEqual(self.project.records, [])
+        self.assertEqual(self.app.session_state["wb_projects"][example.id].result, example.result)
 
-    def test_complete_demo_has_explicit_fictional_review(self) -> None:
-        app = AppTest.from_file(str(APP), default_timeout=30).run()
-        self.assertEqual([item.label for item in app.button], ["先看完整示例", "开始我的估值"])
-        button(app, "先看完整示例").click().run()
-        self.assert_no_exception(app)
-        result = app.session_state["ui_result"]
-        self.assertTrue(result["is_demo"])
-        self.assertFalse(result["include_dcf"])
-        self.assertAlmostEqual(result["market_method"]["result"]["equity_value"], 17.175)
-        workbook = load_workbook(io.BytesIO(create_workpaper_excel("示例", demo_records(), result)), data_only=True)
-        self.assertIn("合成示例", workbook["结论摘要"]["A1"].value)
-        confirmation_states = [row[1] for row in workbook["假设与口径"].iter_rows(values_only=True) if row[0] == "确认"]
-        self.assertEqual(confirmation_states, ["演示预设，非人工复核"] * 4)
-        button(app, "开始我的真实项目").click().run()
-        self.assertEqual(app.session_state["ui_records"], [])
-        self.assertEqual(app.session_state["ui_peers"], [])
-        self.assertFalse(app.session_state["ui_policy"]["peer_review"])
-
-    def test_real_flow_preserves_edits_and_requires_confirmation(self) -> None:
-        app = self.ready_peers_step()
-        next(item for item in app.number_input if item.label == "本公司权重（%）").set_value(40.0).run()
-        self.assertEqual(app.session_state["ui_peers"][0]["weight_pct"], 40.0)
-        self.assertTrue(button(app, "下一步：确认并计算").disabled)
-        button(app, "所选公司采用等权重").click().run()
-        self.assertEqual([peer["weight_pct"] for peer in app.session_state["ui_peers"]], [25.0] * 4)
-        button(app, "下一步：确认并计算").click().run()
-        self.assertTrue(button(app, "生成估值结果").disabled)
-        self.confirm_inputs(app)
-        self.assertFalse(button(app, "生成估值结果").disabled)
-        button(app, "生成估值结果").click().run()
-        self.assert_no_exception(app)
-        result = app.session_state["ui_result"]
-        self.assertFalse(result["is_demo"])
-        self.assertFalse(result["include_dcf"])
-        self.assertNotIn("dcf", result["valuations"])
-        self.assertEqual(result["market_method"]["reviewer"], "验证人员")
-        button(app, "返回修改输入").click().run()
-        self.assertEqual(next(item for item in app.text_input if item.label == "本次由谁复核？").value, "验证人员")
-        button(app, "上一步：可比公司").click().run()
-        next(item for item in app.radio if item.label == "选择本次估值方法").set_value("P/B").run()
-        self.assertFalse(app.session_state["ui_policy"]["peer_review"])
-        self.assertFalse(app.session_state["ui_policy"]["target_review"])
-        self.assertIsNone(app.session_state["ui_result"])
-
-    def test_missing_peer_source_cannot_generate_value(self) -> None:
-        app = self.ready_peers_step()
-        peers = app.session_state["ui_peers"]
-        peers[1]["source"] = ""
-        app.session_state["ui_peers"] = peers
-        button(app, "下一步：确认并计算").click().run()
-        self.confirm_inputs(app)
-        self.assertTrue(button(app, "生成估值结果").disabled)
-        self.assertIsNone(app.session_state["ui_result"])
-        self.assert_no_exception(app)
-
-    def test_dcf_is_optional_and_invalid_discount_rate_blocks_submission(self) -> None:
-        app = self.ready_peers_step()
-        button(app, "下一步：确认并计算").click().run()
-        self.confirm_inputs(app)
-        checkbox(app, "同时计算 DCF 参照").check().run()
-        next(item for item in app.number_input if item.label == "折现率 WACC（%）").set_value(2.0).run()
-        self.assertTrue(button(app, "生成估值结果").disabled)
-        next(item for item in app.number_input if item.label == "折现率 WACC（%）").set_value(12.0).run()
-        self.assertFalse(button(app, "生成估值结果").disabled)
-        button(app, "生成估值结果").click().run()
-        self.assert_no_exception(app)
-        self.assertTrue(app.session_state["ui_result"]["include_dcf"])
-        self.assertIn("base", app.session_state["ui_result"]["valuations"]["dcf"])
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_real_project_requires_business_review_and_calculation_confirmation(self):
+        self.click("＋ 新建估值项目")
+        widget(self.app.text_input, "标的名称").set_value("测试标的")
+        widget(self.app.text_input, "估值基准日").set_value("2026-11-04")
+        widget(self.app.text_area, "主营产品或服务").set_value("工业软件")
+        widget(self.app.text_input, "标的业务资料来源").set_value("测试案例 / 简介")
+        self.click("保存并进入候选池")
+        project = self.project
+        project.records = demo_records()
+        project.save_peer_inputs(demo_comparables(), "可比表.xlsx")
+        project.policy["method_reason"] = "经营盈利与净债务口径已核对"
+        self.app.run()
+        self.click("进入三态复核")
+        self.assertEqual(project.selected(), [])  # The file's prefilled adoption is never accepted.
+        for i, code in enumerate(project.roster()):
+            widget(self.app.selectbox, "当前公司").set_value(code).run()
+            widget(self.app.radio, "复核决定").set_value("采纳")
+            widget(self.app.text_area, "判断依据").set_value("产品、工厂客户与订阅方式相近")
+            widget(self.app.text_input, "复核人").set_value("流程复核人")
+            if i == 0:
+                self.click("保存复核决定")
+                self.assertEqual(project.selected(), [])
+                self.assertTrue(any("补充可回查的业务证据" in str(e.value) for e in self.app.error))
+            widget(self.app.text_input, "补充证据定位").set_value("业务年报第 18 页")
+            self.click("保存复核决定")
+        self.assertEqual(len(project.selected()), 4)
+        self.click("进入估值测算")
+        self.click("生成估值草稿")
+        self.assertIsNone(project.result)
+        for label in CHECKS.values():
+            widget(self.app.checkbox, label).check()
+        self.click("生成估值草稿")
+        self.assertFalse(project.result["is_demo"])
+        self.assertEqual(project.result["market_method"]["reviewer"], "流程复核人")
+        self.click("返回估值测算")
+        widget(self.app.radio, "本次比率").set_value("P/B").run()
+        self.assertIsNone(project.result)
+        self.assertTrue(widget(self.app.button, "生成估值草稿").disabled)
